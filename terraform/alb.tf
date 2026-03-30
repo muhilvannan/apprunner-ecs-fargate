@@ -16,7 +16,7 @@ resource "aws_lb" "main" {
 
 # Default Target Group
 resource "aws_lb_target_group" "default" {
-  name        = "${replace(local.cluster_name, "_", "-")}-tg-default"
+  name        = "${replace(local.project, "_", "-")}-tg-default"
   port        = 80
   protocol    = "HTTP"
   vpc_id      = aws_vpc.main.id

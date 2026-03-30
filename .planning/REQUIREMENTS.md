@@ -8,9 +8,9 @@
 
 ### Infra — Envoy Removal
 
-- [ ] **INFRA-01**: Workspace task definition contains only `landing-page` container (Envoy container removed)
-- [ ] **INFRA-02**: emptyDir shared volume removed from workspace task definition
-- [ ] **INFRA-03**: Envoy task definition registration removed from controller bootstrap flow
+- [x] **INFRA-01**: Workspace task definition contains only `landing-page` container (Envoy container removed)
+- [x] **INFRA-02**: emptyDir shared volume removed from workspace task definition
+- [x] **INFRA-03**: Envoy task definition registration removed from controller bootstrap flow
 
 ### Cloud Map — Service Discovery
 
@@ -74,9 +74,9 @@
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| INFRA-01 | Phase 1 | Pending |
-| INFRA-02 | Phase 1 | Pending |
-| INFRA-03 | Phase 1 | Pending |
+| INFRA-01 | Phase 1 | Complete |
+| INFRA-02 | Phase 1 | Complete |
+| INFRA-03 | Phase 1 | Complete |
 | CMAP-01 | Phase 1 | Pending |
 | CMAP-02 | Phase 2 | Pending |
 | CMAP-03 | Phase 2 | Pending |

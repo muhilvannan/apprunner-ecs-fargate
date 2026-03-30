@@ -12,8 +12,8 @@ See: specs/PROJECT.md (updated 2026-03-30)
 
 **Phase 1: Infra Swap — Drop Envoy, Wire Cloud Map**
 
-Status: Not started
-Plans: 0/2 complete
+Status: In progress
+Current Plan: 1/2 complete
 
 ## Phase History
 
@@ -25,11 +25,16 @@ Plans: 0/2 complete
 | 04: App Routing (v0.2) | ○ Pending | — |
 | 05: Docs & Standards (v0.2) | ○ Pending | — |
 
+## Decisions
+
+- Removed Envoy sidecar entirely — Option C uses Node.js http-proxy-middleware in landing page instead (01-01)
+- ALB TG now points to LANDING_PAGE_PORT (3001) directly; no Envoy port intermediary (01-01)
+- volumes=[] passed explicitly to register_task_definition for clarity (01-01)
+
 ## Next Action
 
-```
-/gsd:plan-phase 1
-```
+Execute plan 01-02: Cloud Map wiring
 
 ---
 *Initialized: 2026-03-30*
+*Last session: 2026-03-30 — Completed 01-01-PLAN.md*

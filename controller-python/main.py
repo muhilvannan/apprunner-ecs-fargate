@@ -39,14 +39,11 @@ VPC_ID          = INFRA.get("vpc_id", "")
 DOMAIN          = "builder.muhilvannan.com"
 
 # Ports
-ENVOY_PORT         = 8080
 LANDING_PAGE_PORT  = 3001
-ENVOY_ADMIN_PORT   = 9901
 
 # Images
 _PY      = "public.ecr.aws/docker/library/python:3.12-slim"
 _NODE    = "public.ecr.aws/docker/library/node:20-slim"
-_ENVOY   = "public.ecr.aws/envoyproxy/envoy:v1.29-latest"
 
 # App type → (image, port, startup command)
 APP_CONFIGS = {
@@ -162,7 +159,7 @@ def workspace_service_name(workspace_id: str) -> str:
     return workspace_id
 
 def workspace_task_family(workspace_id: str) -> str:
-    """Task family for the workspace service task (landing page + envoy)."""
+    """Task family for the workspace service task (landing page only)."""
     return f"{workspace_id}-task"
 
 def app_task_family(workspace_id: str, app_id: str) -> str:
@@ -249,27 +246,18 @@ def create_workspace_iam_role(workspace_id: str) -> str:
     return arn
 
 # ---------------------------------------------------------------------------
-# Workspace service task (landing page + envoy)
+# Workspace service task (landing page only)
 # ---------------------------------------------------------------------------
 def register_workspace_task_definition(workspace_id: str) -> str:
-    """Register the workspace service task: landing-page + envoy containers.
-    Shares an emptyDir volume for the Envoy config file.
-    """
+    """Register the workspace service task: landing-page container only (Option C: Cloud Map + Node.js proxy)."""
     family = workspace_task_family(workspace_id)
     base_path = f"/workspace{workspace_id}"
 
     landing_page_cmd = [
         "sh", "-c",
         f"npm install && WORKSPACE_ID={workspace_id} BASE_PATH={base_path} "
-        f"DOMAIN={DOMAIN} ENVOY_ADMIN_PORT={ENVOY_ADMIN_PORT} "
+        f"DOMAIN={DOMAIN} "
         f"node /app/server.js"
-    ]
-
-    envoy_cmd = [
-        "sh", "-c",
-        # Wait for landing page to write initial config, then start envoy
-        "until [ -f /etc/envoy/envoy.yaml ]; do sleep 1; done && "
-        "envoy -c /etc/envoy/envoy.yaml --log-level warn"
     ]
 
     container_defs = [
@@ -279,12 +267,10 @@ def register_workspace_task_definition(workspace_id: str) -> str:
             "portMappings": [{"containerPort": LANDING_PAGE_PORT, "protocol": "tcp"}],
             "command": landing_page_cmd,
             "essential": True,
-            "mountPoints": [{"sourceVolume": "envoy-config", "containerPath": "/etc/envoy"}],
             "environment": [
                 {"name": "WORKSPACE_ID", "value": workspace_id},
                 {"name": "BASE_PATH", "value": base_path},
                 {"name": "DOMAIN", "value": DOMAIN},
-                {"name": "ENVOY_ADMIN_PORT", "value": str(ENVOY_ADMIN_PORT)},
             ],
             "logConfiguration": {
                 "logDriver": "awslogs",
@@ -295,29 +281,9 @@ def register_workspace_task_definition(workspace_id: str) -> str:
                 },
             },
         },
-        {
-            "name": "envoy",
-            "image": _ENVOY,
-            "portMappings": [
-                {"containerPort": ENVOY_PORT, "protocol": "tcp"},
-                {"containerPort": ENVOY_ADMIN_PORT, "protocol": "tcp"},
-            ],
-            "command": envoy_cmd,
-            "essential": True,
-            "mountPoints": [{"sourceVolume": "envoy-config", "containerPath": "/etc/envoy"}],
-            "dependsOn": [{"containerName": "landing-page", "condition": "START"}],
-            "logConfiguration": {
-                "logDriver": "awslogs",
-                "options": {
-                    "awslogs-group": LOG_GROUP,
-                    "awslogs-region": REGION,
-                    "awslogs-stream-prefix": f"{workspace_id}/envoy",
-                },
-            },
-        },
     ]
 
-    volumes = [{"name": "envoy-config"}]  # emptyDir — shared between containers
+    volumes = []
 
     log.info("Registering workspace task definition: family=%s", family)
     resp = ecs.register_task_definition(

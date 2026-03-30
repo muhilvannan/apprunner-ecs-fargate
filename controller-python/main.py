@@ -351,7 +351,7 @@ def register_app_task_definition(workspace_id: str, app_def: dict, app_role_arn:
 # ECS service (workspace)
 # ---------------------------------------------------------------------------
 def ensure_workspace_service(workspace_id: str, task_def_arn: str) -> str:
-    """Create or update the workspace ECS service (landing page + envoy).
+    """Create or update the workspace ECS service (landing page only).
     desiredCount=1, always running, service-scheduler managed.
     """
     name = workspace_service_name(workspace_id)
@@ -470,7 +470,7 @@ def get_https_listener_arn() -> str | None:
         return None
 
 def ensure_workspace_target_group(workspace_id: str) -> str:
-    """One target group per workspace, pointing at Envoy port."""
+    """One target group per workspace, pointing at landing page port."""
     tg_name = workspace_tg_name(workspace_id)
     try:
         existing = elbv2.describe_target_groups(Names=[tg_name])["TargetGroups"]
@@ -481,11 +481,11 @@ def ensure_workspace_target_group(workspace_id: str) -> str:
     except elbv2.exceptions.TargetGroupNotFoundException:
         pass
 
-    log.info("Creating workspace target group: %s port=%d", tg_name, ENVOY_PORT)
+    log.info("Creating workspace target group: %s port=%d", tg_name, LANDING_PAGE_PORT)
     resp = elbv2.create_target_group(
         Name=tg_name,
         Protocol="HTTP",
-        Port=ENVOY_PORT,
+        Port=LANDING_PAGE_PORT,
         VpcId=VPC_ID,
         TargetType="ip",
         HealthCheckProtocol="HTTP",
@@ -509,8 +509,8 @@ def find_workspace_listener_rule(listener_arn: str, workspace_id: str) -> dict |
     return None
 
 def ensure_workspace_listener_rule(workspace_id: str, tg_arn: str) -> str:
-    """One ALB rule per workspace: /workspace{id}/* → workspace TG (Envoy).
-    Always forward — Envoy handles the per-app routing internally.
+    """One ALB rule per workspace: /workspace{id}/* → workspace TG (landing page).
+    Always forward — landing page handles per-app routing via Cloud Map proxy.
     """
     listener_arn = get_https_listener_arn()
     if not listener_arn:
@@ -591,19 +591,19 @@ def wait_for_task_ip(task_arn: str, retries: int = 12, delay: int = 5) -> str | 
     return None
 
 def register_workspace_to_tg(task_arn: str, tg_arn: str) -> None:
-    """Register the workspace service task IP:ENVOY_PORT to the workspace TG."""
+    """Register the workspace service task IP:LANDING_PAGE_PORT to the workspace TG."""
     ip = wait_for_task_ip(task_arn)
     if not ip:
         log.warning("Could not get workspace task IP — skipping TG registration")
         return
-    log.info("Registering workspace task %s:%d → TG", ip, ENVOY_PORT)
-    elbv2.register_targets(TargetGroupArn=tg_arn, Targets=[{"Id": ip, "Port": ENVOY_PORT}])
+    log.info("Registering workspace task %s:%d → TG", ip, LANDING_PAGE_PORT)
+    elbv2.register_targets(TargetGroupArn=tg_arn, Targets=[{"Id": ip, "Port": LANDING_PAGE_PORT}])
 
 # ---------------------------------------------------------------------------
 # Envoy route management via landing page internal API
 # ---------------------------------------------------------------------------
 def get_landing_page_ip(workspace_id: str) -> str | None:
-    """Return the private IP of the workspace service task (landing page + envoy)."""
+    """Return the private IP of the workspace service task (landing page)."""
     task_arns = ecs.list_tasks(cluster=CLUSTER, serviceName=workspace_id, desiredStatus="RUNNING").get("taskArns", [])
     if not task_arns:
         return None
@@ -655,16 +655,16 @@ def health():
         "task_sg": TASK_SG,
         "exec_role_arn": EXEC_ROLE_ARN,
         "infra_loaded": bool(INFRA),
-        "arch": "per-app-run_task+envoy",
+        "arch": "per-app-run_task+cloudmap",
     }
 
 @app.post("/workspace/bootstrap")
 def bootstrap_workspace(payload: WorkspaceBootstrap):
     """
     1. Create workspace-scoped IAM role for app tasks.
-    2. Register workspace service task def (landing-page + envoy).
+    2. Register workspace service task def (landing-page only).
     3. Create/update workspace ECS service (desiredCount=1).
-    4. Create workspace target group (→ Envoy port) + ALB listener rule.
+    4. Create workspace target group (→ landing page port) + ALB listener rule.
     5. Wait for workspace service task to be running, register to TG.
     6. For each app:
        a. Register single-container app task definition.
@@ -678,7 +678,7 @@ def bootstrap_workspace(payload: WorkspaceBootstrap):
         # 1. IAM role
         app_role_arn = create_workspace_iam_role(workspace_id)
 
-        # 2. Workspace task def (landing page + envoy)
+        # 2. Workspace task def (landing page only)
         workspace_task_def_arn = register_workspace_task_definition(workspace_id)
 
         # 3. Workspace service

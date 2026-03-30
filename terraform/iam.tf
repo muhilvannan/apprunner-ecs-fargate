@@ -1,6 +1,6 @@
 # ECS Task Execution Role (can pull images, push logs, etc.)
 resource "aws_iam_role" "ecs_task_execution_role" {
-  name = "ecs-task-execution-role-${var.environment}"
+  name = "ecs-task-execution-role-${local.environment}"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -16,7 +16,7 @@ resource "aws_iam_role" "ecs_task_execution_role" {
   })
 
   tags = {
-    Name = "ecs-task-execution-role-${var.environment}"
+    Name = "ecs-task-execution-role-${local.environment}"
   }
 }
 
@@ -28,7 +28,7 @@ resource "aws_iam_role_policy_attachment" "ecs_task_execution_role_policy" {
 
 # Inline policy for CloudWatch logs
 resource "aws_iam_role_policy" "ecs_task_execution_cloudwatch" {
-  name = "ecs-task-execution-cloudwatch-${var.environment}"
+  name = "ecs-task-execution-cloudwatch-${local.environment}"
   role = aws_iam_role.ecs_task_execution_role.id
 
   policy = jsonencode({
@@ -52,7 +52,7 @@ resource "aws_iam_role_policy" "ecs_task_execution_cloudwatch" {
 
 # ECS Workspace Task Role (base role, will be customized per workspace)
 resource "aws_iam_role" "ecs_workspace_task_role" {
-  name = "ecs-workspace-task-role-${var.environment}"
+  name = "ecs-workspace-task-role-${local.environment}"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -68,7 +68,7 @@ resource "aws_iam_role" "ecs_workspace_task_role" {
   })
 
   tags = {
-    Name = "ecs-workspace-task-role-${var.environment}"
+    Name = "ecs-workspace-task-role-${local.environment}"
     Type = "workspace-base"
   }
 }

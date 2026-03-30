@@ -13,7 +13,7 @@ provider "aws" {
 
   default_tags {
     tags = {
-      Environment = var.environment
+      Environment = local.environment
       Project     = "ecs-app-tester"
       ManagedBy   = "Terraform"
     }
@@ -21,7 +21,7 @@ provider "aws" {
 }
 
 locals {
-  cluster_name = "ecs-app-tester-exp-${var.environment}"
+  cluster_name = "ecs-app-tester-exp-${local.environment}"
   namespace    = "workspace-discovery.local"
   project      = "ecs-app-tester-exp"
 }

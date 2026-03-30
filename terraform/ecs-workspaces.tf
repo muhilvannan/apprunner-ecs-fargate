@@ -3,7 +3,7 @@
 
 # Pre-defined task definitions for common apps
 resource "aws_ecs_task_definition" "streamlit_app" {
-  family                   = "streamlit-app-${var.environment}"
+  family                   = "streamlit-app-${local.environment}"
   network_mode             = "awsvpc"
   requires_compatibilities = ["FARGATE"]
   cpu                      = "256"

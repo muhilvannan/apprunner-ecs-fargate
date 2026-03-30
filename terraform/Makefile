@@ -42,3 +42,35 @@ plan-workspace:
 # Apply with workspace vars
 apply-workspace:
 	terraform apply -var-file=workspace.tfvars -auto-approve
+
+# Workspace management
+.PHONY: workspace-list workspace-select workspace-new workspace-delete dev staging prod
+
+# List workspaces
+workspace-list:
+	terraform workspace list
+
+# Select workspace
+workspace-select:
+	@echo "Available workspaces:" && terraform workspace list
+	@read -p "Enter workspace name: " ws && terraform workspace select $$ws
+
+# Create new workspace
+workspace-new:
+	@echo "Available workspaces:" && terraform workspace list
+	@read -p "Enter new workspace name: " ws && terraform workspace new $$ws
+
+# Delete workspace
+workspace-delete:
+	@echo "Available workspaces:" && terraform workspace list
+	@read -p "Enter workspace to delete: " ws && terraform workspace delete $$ws
+
+# Environment shortcuts
+dev:
+	terraform workspace select dev 2>/dev/null || terraform workspace new dev
+
+staging:
+	terraform workspace select staging 2>/dev/null || terraform workspace new staging
+
+prod:
+	terraform workspace select prod 2>/dev/null || terraform workspace new prod

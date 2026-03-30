@@ -35,9 +35,9 @@
             font-weight: 600;
             text-transform: uppercase;
             letter-spacing: 0.08em;
-            background: #1e3a5f;
-            color: #60a5fa;
-            border: 1px solid #2563eb44;
+            background: #1e2e1e;
+            color: #4ade80;
+            border: 1px solid #16a34a44;
             padding: 3px 8px;
             border-radius: 4px;
         }
@@ -81,7 +81,6 @@
 
         .icon-bootstrap { background: #1a2e44; }
         .icon-control   { background: #1a2533; }
-        .icon-sync      { background: #1e1a2e; }
 
         .card-header h2 {
             font-size: 1rem;
@@ -114,12 +113,6 @@
             color: #94a3b8;
             margin-bottom: 5px;
             letter-spacing: 0.02em;
-        }
-
-        label .optional {
-            color: #475569;
-            font-weight: 400;
-            margin-left: 4px;
         }
 
         input, textarea {
@@ -162,6 +155,7 @@
             cursor: pointer;
             transition: opacity 0.15s, transform 0.1s;
             font-family: inherit;
+            text-decoration: none;
         }
 
         .btn:active { transform: scale(0.98); }
@@ -170,7 +164,7 @@
         .btn-bootstrap { background: #2563eb; color: #fff; }
         .btn-start     { background: #16a34a; color: #fff; }
         .btn-stop      { background: #dc2626; color: #fff; }
-        .btn-sync      { background: #7c3aed; color: #fff; }
+        .btn-open      { background: #0f172a; color: #60a5fa; border: 1px solid #1e3a5f; }
 
         .btn:not(:disabled):hover { opacity: 0.88; }
 
@@ -194,6 +188,15 @@
         .response-area.success { color: #4ade80; border-color: #14532d55; }
         .response-area.error   { color: #f87171; border-color: #7f1d1d55; }
         .response-area.loading { color: #60a5fa; }
+
+        .workspace-link {
+            margin-top: 12px;
+            display: none;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .workspace-link.visible { display: flex; }
 
         .divider {
             border: none;
@@ -276,7 +279,7 @@
 <body>
     <header>
         <h1>ECS App Tester</h1>
-        <span class="badge">Control Panel</span>
+        <span class="badge">Experiment: task-per-app</span>
     </header>
 
     <div class="grid">
@@ -287,19 +290,13 @@
                 <div class="card-icon icon-bootstrap">🚀</div>
                 <div>
                     <h2>Bootstrap Workspace</h2>
-                    <p>Provision a new workspace and deploy infrastructure</p>
+                    <p>Provision workspace service (landing page + Envoy) and launch app tasks</p>
                 </div>
             </div>
             <form id="bootstrapForm">
-                <div class="form-row">
-                    <div class="form-group">
-                        <label for="workspaceId">Workspace ID</label>
-                        <input type="text" id="workspaceId" name="workspaceId" placeholder="e.g. ws-001" required>
-                    </div>
-                    <div class="form-group">
-                        <label for="s3Bucket">S3 Bucket <span class="optional">(optional)</span></label>
-                        <input type="text" id="s3Bucket" name="s3Bucket" placeholder="my-bucket">
-                    </div>
+                <div class="form-group">
+                    <label for="workspaceId">Workspace ID</label>
+                    <input type="text" id="workspaceId" name="workspaceId" placeholder="e.g. ws-001" required>
                 </div>
 
                 <div class="apps-section">
@@ -313,6 +310,9 @@
                 <button type="submit" class="btn btn-bootstrap" style="margin-top:16px">Bootstrap Workspace</button>
             </form>
             <div id="bootstrapResponse" class="response-area"></div>
+            <div id="workspaceLink" class="workspace-link">
+                <a id="workspaceLinkAnchor" class="btn btn-open" target="_blank" rel="noopener noreferrer">↗ Open Workspace Hub</a>
+            </div>
         </div>
 
         <!-- App Control (Start / Stop) -->
@@ -321,7 +321,7 @@
                 <div class="card-icon icon-control">⚙</div>
                 <div>
                     <h2>App Control</h2>
-                    <p>Start or stop apps within a workspace</p>
+                    <p>Start or stop app tasks — routes via Envoy in workspace service</p>
                 </div>
             </div>
             <div class="form-row" style="margin-bottom:14px;">
@@ -339,50 +339,18 @@
                     <option value="">— load apps first —</option>
                 </select>
             </div>
-            <div style="display:flex;gap:10px;">
+            <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
                 <button type="button" class="btn btn-start" onclick="controlApp('start')">▶ Start</button>
                 <button type="button" class="btn btn-stop"  onclick="controlApp('stop')">⏹ Stop</button>
+                <a id="appLinkAnchor" class="btn btn-open" style="display:none;" target="_blank" rel="noopener noreferrer">↗ Open App</a>
             </div>
             <div id="controlResponse" class="response-area"></div>
-        </div>
-
-        <!-- Sync Files -->
-        <div class="card" style="grid-column: 1 / -1;">
-            <div class="card-header">
-                <div class="card-icon icon-sync">⇄</div>
-                <div>
-                    <h2>Sync App Files</h2>
-                    <p>Pull files from S3 into EFS for a workspace app</p>
-                </div>
-            </div>
-            <form id="syncForm">
-                <div class="form-row">
-                    <div class="form-group">
-                        <label for="syncWorkspaceId">Workspace ID</label>
-                        <input type="text" id="syncWorkspaceId" name="workspaceId" placeholder="e.g. ws-001" required>
-                    </div>
-                    <div class="form-group">
-                        <label for="syncAppId">App ID</label>
-                        <input type="text" id="syncAppId" name="appId" placeholder="e.g. app-001" required>
-                    </div>
-                    <div class="form-group">
-                        <label for="syncS3Bucket">S3 Bucket</label>
-                        <input type="text" id="syncS3Bucket" name="s3Bucket" placeholder="my-bucket" required>
-                    </div>
-                    <div class="form-group">
-                        <label for="syncS3Prefix">S3 Prefix <span class="optional">(optional)</span></label>
-                        <input type="text" id="syncS3Prefix" name="s3Prefix" placeholder="path/to/files/">
-                    </div>
-                </div>
-                <button type="submit" class="btn btn-sync">Sync Files</button>
-            </form>
-            <div id="syncResponse" class="response-area"></div>
         </div>
 
     </div>
 
     <script>
-        const APP_TYPES = ['streamlit', 'fastapi', 'reactjs', 'mkdocs'];
+        const APP_TYPES = ['streamlit', 'fastapi', 'reactjs', 'mkdocs', 'custom'];
 
         function appTypeOptions() {
             return APP_TYPES.map(t => `<option value="${t}">${t}</option>`).join('');
@@ -414,58 +382,50 @@
             })).filter(a => a.name);
         }
 
-        async function submitForm(formId, method, endpoint, responseId, buildData) {
-            const form = document.getElementById(formId);
-            const responseDiv = document.getElementById(responseId);
+        // Bootstrap form
+        document.getElementById('bootstrapForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const form = e.target;
+            const btn = form.querySelector('button[type="submit"]');
+            const responseDiv = document.getElementById('bootstrapResponse');
+            const linkDiv = document.getElementById('workspaceLink');
+            const linkAnchor = document.getElementById('workspaceLinkAnchor');
 
-            form.addEventListener('submit', async (e) => {
-                e.preventDefault();
-                const btn = form.querySelector('button[type="submit"]');
-                btn.disabled = true;
-                responseDiv.className = 'response-area visible loading';
-                responseDiv.textContent = 'Sending request…';
+            btn.disabled = true;
+            linkDiv.classList.remove('visible');
+            responseDiv.className = 'response-area visible loading';
+            responseDiv.textContent = 'Bootstrapping workspace… (this takes ~2–5 min while app tasks start)';
 
-                try {
-                    const data = buildData(form);
-                    const response = await fetch(endpoint, {
-                        method,
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify(data)
-                    });
-                    const result = await response.json();
-                    responseDiv.className = `response-area visible ${response.ok ? 'success' : 'error'}`;
-                    responseDiv.textContent = JSON.stringify(result, null, 2);
-                } catch (error) {
-                    responseDiv.className = 'response-area visible error';
-                    responseDiv.textContent = `Error: ${error.message}`;
+            try {
+                const workspaceId = document.getElementById('workspaceId').value.trim();
+                const apps = collectApps();
+                const response = await fetch('/api/workspace/bootstrap', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ workspaceId, apps }),
+                });
+                const result = await response.json();
+                responseDiv.className = `response-area visible ${response.ok ? 'success' : 'error'}`;
+                responseDiv.textContent = JSON.stringify(result, null, 2);
+
+                if (response.ok && result.workspaceUrl) {
+                    linkAnchor.href = result.workspaceUrl;
+                    linkDiv.classList.add('visible');
                 }
-
-                btn.disabled = false;
-            });
-        }
-
-        function simpleData(form) {
-            const data = {};
-            for (let [key, value] of new FormData(form).entries()) {
-                if (value) data[key] = value;
+            } catch (error) {
+                responseDiv.className = 'response-area visible error';
+                responseDiv.textContent = `Error: ${error.message}`;
             }
-            return data;
-        }
 
-        submitForm('bootstrapForm', 'POST', '/api/workspace/bootstrap', 'bootstrapResponse', (form) => {
-            const data = simpleData(form);
-            const apps = collectApps();
-            if (apps.length) data.apps = apps;
-            return data;
+            btn.disabled = false;
         });
-
-        submitForm('syncForm', 'PUT', '/api/app/sync', 'syncResponse', simpleData);
 
         async function loadApps() {
             const workspaceId = document.getElementById('controlWorkspaceId').value.trim();
             const responseDiv = document.getElementById('controlResponse');
             const select = document.getElementById('appSelect');
             const btn = document.getElementById('loadAppsBtn');
+            const appLink = document.getElementById('appLinkAnchor');
 
             if (!workspaceId) {
                 responseDiv.className = 'response-area visible error';
@@ -474,6 +434,7 @@
             }
 
             btn.disabled = true;
+            appLink.style.display = 'none';
             responseDiv.className = 'response-area visible loading';
             responseDiv.textContent = 'Loading apps…';
 
@@ -491,16 +452,20 @@
                 if (!result.apps || result.apps.length === 0) {
                     select.innerHTML = '<option value="">— no apps found —</option>';
                     responseDiv.className = 'response-area visible error';
-                    responseDiv.textContent = `No apps found for workspace "${workspaceId}". Bootstrap the workspace first.`;
+                    responseDiv.textContent = `No apps found for workspace "${workspaceId}". Bootstrap first.`;
                     return;
                 }
 
                 result.apps.forEach(app => {
                     const opt = document.createElement('option');
                     opt.value = app.appId;
+                    opt.dataset.url = app.url || '';
                     opt.textContent = `${app.appId}  [${app.status}]`;
                     select.appendChild(opt);
                 });
+
+                // Show link for initially selected app
+                updateAppLink();
 
                 responseDiv.className = 'response-area visible success';
                 responseDiv.textContent = `Loaded ${result.apps.length} app(s)`;
@@ -511,6 +476,20 @@
                 btn.disabled = false;
             }
         }
+
+        function updateAppLink() {
+            const select = document.getElementById('appSelect');
+            const appLink = document.getElementById('appLinkAnchor');
+            const selected = select.options[select.selectedIndex];
+            if (selected && selected.dataset.url) {
+                appLink.href = selected.dataset.url;
+                appLink.style.display = 'inline-flex';
+            } else {
+                appLink.style.display = 'none';
+            }
+        }
+
+        document.getElementById('appSelect').addEventListener('change', updateAppLink);
 
         async function controlApp(action) {
             const workspaceId = document.getElementById('controlWorkspaceId').value.trim();

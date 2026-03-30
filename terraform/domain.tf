@@ -2,31 +2,31 @@
 
 # ACM Certificate for custom domain
 resource "aws_acm_certificate" "main" {
-  domain_name       = "brewer.muhilvannan.com"
+  domain_name       = "builder.muhilvannan.com"
   validation_method = "DNS"
 
   subject_alternative_names = [
-    "*.brewer.muhilvannan.com"
+    "*.builder.muhilvannan.com"
   ]
 
   tags = {
-    Name = "brewer-cert"
+    Name = "builder-cert"
   }
 }
 
-# Route53 Hosted Zone for brewer.muhilvannan.com
+# Route53 Hosted Zone for builder.muhilvannan.com
 resource "aws_route53_zone" "main" {
-  name = "brewer.muhilvannan.com"
+  name = "builder.muhilvannan.com"
 
   tags = {
-    Name = "brewer-hosted-zone"
+    Name = "builder-hosted-zone"
   }
 }
 
 # Route53 A Record for ALB
 resource "aws_route53_record" "alb" {
   zone_id = aws_route53_zone.main.zone_id
-  name    = "brewer.muhilvannan.com"
+  name    = "builder.muhilvannan.com"
   type    = "A"
 
   alias {

@@ -66,20 +66,6 @@ app.post('/api/app/stop', async (req, res) => {
   }
 });
 
-app.put('/api/app/sync', async (req, res) => {
-  try {
-    const controllerResponse = await fetch('http://localhost:8000/app/sync', {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(req.body)
-    });
-    const result = await controllerResponse.json();
-    res.json(result);
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
 app.listen(port, () => {
   console.log(`UI app listening at http://localhost:${port}`);
 });

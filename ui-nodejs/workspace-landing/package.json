@@ -1,0 +1,12 @@
+{
+  "name": "workspace-landing",
+  "version": "1.0.0",
+  "description": "Workspace hub: landing page + Envoy config API",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2"
+  }
+}

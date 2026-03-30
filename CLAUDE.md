@@ -4,60 +4,43 @@
 
 Multi-workspace application management system on AWS ECS Fargate.
 
-## CRITICAL Architecture Rules
+## BRANCH: task-level-app-experiments
 
-**DO NOT CHANGE these without an explicit user instruction. This has caused repeated mistakes.**
+> **This branch intentionally overrides the main branch architecture (ADR-002).**
+> See [specs/adr/002-workspace-service-multicontainer-task.md](specs/adr/002-workspace-service-multicontainer-task.md) for the full comparison.
 
-> **Workspace = 1 ECS Service (desiredCount=1, always running)**
-> **All apps in a workspace = containers in ONE multi-container task**
-> **Start/Stop = ALB listener rule toggle ONLY — NEVER `run_task` or `stop_task`**
-
-### Why multi-container task (not 1 task per app)
-
-AWS hard constraint: tasks launched via `run_task` NEVER appear under a service in the ECS
-console — they always appear as standalone cluster-level tasks. The ONLY way a task is visible
-under a service is if the **service scheduler** launched it (desiredCount=1). Therefore the
-workspace service must own the task lifecycle. This means one service → one task → all apps
-as containers in that task.
-
-See [specs/adr/002-workspace-service-multicontainer-task.md](specs/adr/002-workspace-service-multicontainer-task.md)
+### Architecture on this branch
 
 ```
-ECS Cluster (ecs-app-tester-dev, eu-west-1)
+ECS Cluster (ecs-app-tester-exp-dev, eu-west-1)
   └── Service: {workspaceId}       desiredCount=1
-        └── Task: {workspaceId}-task    ← launched by service scheduler, visible in console
-              ├── Container: app1       (port varies by type)
-              ├── Container: app2
-              └── Container: appN
+        └── Task: {workspaceId}-task    ← service-managed (landing page + Envoy)
+              ├── Container: landing-page   port 3001  (workspace hub UI + Envoy config API)
+              └── Container: envoy          port 8080  (L7 proxy, shared emptyDir config)
 
-ALB (ecs-app-tester-dev-alb)
-  ├── /workspace{id}/app1*  → TG: {id}-app1-tg  (forward | fixed-response 503)
-  ├── /workspace{id}/app2*  → TG: {id}-app2-tg
-  └── ...
+Standalone App Tasks (run_task — NOT under service):
+  ├── Task: {workspaceId}-{appId}   IAM role: {workspaceId}-app-role
+  └── Task: {workspaceId}-{appId2}  IAM role: {workspaceId}-app-role
 
-Domain: brewer.muhilvannan.com
+ALB (ecs-app-tester-exp-dev-alb)
+  └── /workspace{id}/*  → TG: {workspaceId}-tg  → Envoy :8080
+
+Envoy routes (hot-reloaded via Admin API + SIGHUP):
+  /workspace{id}/{appId}/*  →  {appTaskIP}:{port}
+  /workspace{id}            →  127.0.0.1:3001 (landing page)
+
+Domain: builder.muhilvannan.com
 ```
 
-## Architecture
+### Key Design Decisions (this branch)
 
-```
-Browser (port 3000)
-    ↓
-Express UI (ui-nodejs/)
-    ↓
-FastAPI Controller (port 8000, Docker) — controller-python/
-    ↓ boto3 AWS SDK calls
-```
-
-### Key Design Decisions
-
-- **1 ECS Service per workspace** — `{workspaceId}`, desiredCount=1, service scheduler owns task
-- **Multi-container task** — all apps share one task, one ENI, one private IP, different ports
-- **Start/Stop = ALB rule toggle** — `forward` (running) ↔ `fixed-response 503` (stopped); containers never stop
-- **No `run_task` / `stop_task`** — task lifecycle is managed entirely by the service
-- **No Terraform at runtime** — controller uses boto3 directly; Terraform only provisions base infra
-- **Infrastructure IDs** loaded at startup from `infrastructure-outputs.json` (mounted into container)
-- **Streamlit base URL path** — `--server.baseUrlPath=/workspace{id}/{appId}` for static asset routing
+- **1 ECS Service per workspace** — contains landing-page + envoy only
+- **1 `run_task` per app** — independent lifecycle, own ENI, own IAM role
+- **Start/Stop = Envoy route add/remove + task run/stop** — no ALB rule changes
+- **1 ALB rule per workspace** — always forward to Envoy; Envoy handles per-app routing
+- **Per-workspace IAM role** — `{workspaceId}-app-role` scoped to ECS describe, denies lateral movement
+- **Landing page hub** — Node.js app with iframe embeds, app status cards, Envoy config API
+- **Envoy config API** — `POST /internal/routes/add|remove` rewrites config + SIGHUP reload
 
 ## Components
 
@@ -75,7 +58,7 @@ Task def family:  {workspaceId}-task
 Container name:   {appId}
 Target group:     {workspaceId}-{appId}-tg   (max 32 chars)
 ALB path:         /workspace{workspaceId}/{appId}*
-App URL:          https://brewer.muhilvannan.com/workspace{workspaceId}/{appId}
+App URL:          https://builder.muhilvannan.com/workspace{workspaceId}/{appId}
 ```
 
 ## API Endpoints
@@ -149,10 +132,10 @@ make clean            # remove image
 
 - Region: `eu-west-1`
 - Environment: `dev`
-- Domain: `brewer.muhilvannan.com`
+- Domain: `builder.muhilvannan.com`
 - VPC CIDR: `10.0.0.0/16`
 - AZs: `eu-west-1a`, `eu-west-1b`
-- Cluster: `ecs-app-tester-dev`
+- Cluster: `ecs-app-tester-exp-dev`
 - Log group: `/ecs/app-tester`
 
 ## App Types

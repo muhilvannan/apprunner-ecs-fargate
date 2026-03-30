@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import time
+import httpx
 
 logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
 log = logging.getLogger(__name__)
@@ -29,21 +30,27 @@ except Exception as e:
     INFRA = {}
 
 REGION          = os.environ.get("AWS_DEFAULT_REGION") or os.environ.get("AWS_REGION", "eu-west-1")
-CLUSTER         = INFRA.get("cluster_name", "ecs-app-tester-dev")
+CLUSTER         = INFRA.get("cluster_name", "ecs-app-tester-exp-dev")
 PRIVATE_SUBNETS = INFRA.get("private_subnet_ids", [])
 TASK_SG         = INFRA.get("ecs_task_security_group_id", "")
 EXEC_ROLE_ARN   = INFRA.get("ecs_task_execution_role_arn", "")
-TASK_ROLE_ARN   = INFRA.get("ecs_workspace_task_role_arn", "")
 LOG_GROUP       = INFRA.get("cloudwatch_log_group_name", "/ecs/app-tester")
 VPC_ID          = INFRA.get("vpc_id", "")
-DOMAIN          = "brewer.muhilvannan.com"
+DOMAIN          = "builder.muhilvannan.com"
+
+# Ports
+ENVOY_PORT         = 8080
+LANDING_PAGE_PORT  = 3001
+ENVOY_ADMIN_PORT   = 9901
+
+# Images
+_PY      = "public.ecr.aws/docker/library/python:3.12-slim"
+_NODE    = "public.ecr.aws/docker/library/node:20-slim"
+_ENVOY   = "public.ecr.aws/envoyproxy/envoy:v1.29-latest"
 
 # App type → (image, port, startup command)
-# public.ecr.aws mirror — no auth required on Fargate
-_PY = "public.ecr.aws/docker/library/python:3.12-slim"
-
 APP_CONFIGS = {
-    "streamlit": (_PY, 8501, None),  # command built dynamically with base URL path
+    "streamlit": (_PY, 8501, None),   # command built dynamically
     "fastapi":   (_PY, 8000,
                   ["sh", "-c",
                    "pip install --quiet fastapi uvicorn && "
@@ -52,8 +59,8 @@ APP_CONFIGS = {
                    "app=FastAPI(); app.get('/')(lambda: {'status':'ok'}); "
                    "uvicorn.run(app, host='0.0.0.0', port=8000)"
                    "\""]),
-    "reactjs":   (_PY, 3000, None),   # command built dynamically with base URL path
-    "mkdocs":    (_PY, 8001, None),   # command built dynamically with base URL path
+    "reactjs":   (_PY, 3000, None),   # command built dynamically
+    "mkdocs":    (_PY, 8001, None),   # command built dynamically
     "custom":    (_PY, 8080,
                   ["python", "-c", "import time; time.sleep(86400)"]),
 }
@@ -103,7 +110,6 @@ def _app_config(app_type: str, workspace_id: str = "", app_id: str = ""):
                    f"PYEOF"]
 
     elif app_type == "mkdocs":
-        # Build site with correct site_url so links resolve, serve with prefix stripping
         command = ["sh", "-c",
                    f"pip install --quiet mkdocs && "
                    f"mkdir -p /app/docs/docs && "
@@ -137,89 +143,183 @@ def _app_config(app_type: str, workspace_id: str = "", app_id: str = ""):
 ecs   = boto3.client("ecs",   region_name=REGION)
 elbv2 = boto3.client("elbv2", region_name=REGION)
 iam   = boto3.client("iam",   region_name=REGION)
-s3    = boto3.client("s3",    region_name=REGION)
 
 # ---------------------------------------------------------------------------
 # Models
 # ---------------------------------------------------------------------------
 class WorkspaceBootstrap(BaseModel):
     workspaceId: str
-    s3Bucket: str | None = None
     apps: list[dict]
 
 class AppAction(BaseModel):
     workspaceId: str
     appId: str
 
-class AppSync(BaseModel):
-    workspaceId: str
-    appId: str
-    s3Bucket: str
-    s3Prefix: str | None = None
-
 # ---------------------------------------------------------------------------
 # Naming
 # ---------------------------------------------------------------------------
 def workspace_service_name(workspace_id: str) -> str:
-    """ECS service name = workspace ID (1 service per workspace)."""
     return workspace_id
 
 def workspace_task_family(workspace_id: str) -> str:
-    """ECS task definition family for the workspace multi-container task."""
+    """Task family for the workspace service task (landing page + envoy)."""
     return f"{workspace_id}-task"
 
-def app_tg_name(workspace_id: str, app_id: str) -> str:
-    return f"{workspace_id}-{app_id}-tg"[:32]
+def app_task_family(workspace_id: str, app_id: str) -> str:
+    """Task family for a standalone app task."""
+    return f"{workspace_id}-{app_id}-task"
+
+def app_task_group(workspace_id: str) -> str:
+    """ECS task group tag — used to find all app tasks for a workspace."""
+    return f"workspace:{workspace_id}"
+
+def workspace_tg_name(workspace_id: str) -> str:
+    return f"{workspace_id}-tg"[:32]
+
+def workspace_iam_role_name(workspace_id: str) -> str:
+    return f"{workspace_id}-app-role"
+
+def workspace_url(workspace_id: str) -> str:
+    return f"https://{DOMAIN}/workspace{workspace_id}"
 
 def app_url(workspace_id: str, app_id: str) -> str:
     return f"https://{DOMAIN}/workspace{workspace_id}/{app_id}"
 
 # ---------------------------------------------------------------------------
-# Helpers
+# IAM — per-workspace app task role
 # ---------------------------------------------------------------------------
-def get_https_listener_arn() -> str | None:
-    try:
-        lbs = elbv2.describe_load_balancers()["LoadBalancers"]
-        alb = next((lb for lb in lbs if "ecs-app-tester" in lb["LoadBalancerName"]), None)
-        if not alb:
-            return None
-        listeners = elbv2.describe_listeners(LoadBalancerArn=alb["LoadBalancerArn"])["Listeners"]
-        https = next((l for l in listeners if l["Port"] == 443), None)
-        return https["ListenerArn"] if https else None
-    except Exception as e:
-        log.warning("Could not resolve HTTPS listener: %s", e)
-        return None
+def create_workspace_iam_role(workspace_id: str) -> str:
+    """Create a per-workspace IAM role for app tasks.
+    Scoped to ECS describe permissions only. No S3/EFS in scope for this experiment.
+    Deny stop/run to prevent lateral movement between workspaces.
+    """
+    role_name = workspace_iam_role_name(workspace_id)
 
-def register_workspace_task_definition(workspace_id: str, apps: list[dict]) -> str:
-    """Register a multi-container task definition — one container per app.
-    All containers share the same task (same ENI/IP). Each app has its own port.
-    This is required so all apps appear under a single ECS service in the console.
+    assume_policy = json.dumps({
+        "Version": "2012-10-17",
+        "Statement": [{
+            "Effect": "Allow",
+            "Principal": {"Service": "ecs-tasks.amazonaws.com"},
+            "Action": "sts:AssumeRole",
+        }],
+    })
+
+    inline_policy = json.dumps({
+        "Version": "2012-10-17",
+        "Statement": [
+            {
+                "Sid": "ECSDescribeOwnCluster",
+                "Effect": "Allow",
+                "Action": ["ecs:DescribeTasks", "ecs:DescribeTaskDefinition"],
+                "Resource": "*",
+                "Condition": {
+                    "ArnLike": {
+                        "ecs:cluster": f"arn:aws:ecs:*:*:cluster/{CLUSTER}"
+                    }
+                },
+            },
+            {
+                "Sid": "DenyLateralMovement",
+                "Effect": "Deny",
+                "Action": ["ecs:StopTask", "ecs:RunTask", "ecs:StartTask"],
+                "Resource": "*",
+            },
+        ],
+    })
+
+    try:
+        resp = iam.create_role(
+            RoleName=role_name,
+            AssumeRolePolicyDocument=assume_policy,
+            Description=f"App task role for workspace {workspace_id}",
+            Tags=[{"Key": "WorkspaceId", "Value": workspace_id}],
+        )
+        arn = resp["Role"]["Arn"]
+        log.info("Created IAM role: %s", arn)
+    except iam.exceptions.EntityAlreadyExistsException:
+        arn = iam.get_role(RoleName=role_name)["Role"]["Arn"]
+        log.info("IAM role already exists: %s", arn)
+
+    iam.put_role_policy(
+        RoleName=role_name,
+        PolicyName=f"{workspace_id}-app-policy",
+        PolicyDocument=inline_policy,
+    )
+    log.info("Applied inline policy to %s", role_name)
+    return arn
+
+# ---------------------------------------------------------------------------
+# Workspace service task (landing page + envoy)
+# ---------------------------------------------------------------------------
+def register_workspace_task_definition(workspace_id: str) -> str:
+    """Register the workspace service task: landing-page + envoy containers.
+    Shares an emptyDir volume for the Envoy config file.
     """
     family = workspace_task_family(workspace_id)
-    container_defs = []
-    for app_def in apps:
-        app_id   = app_def.get("name", "app")
-        app_type = app_def.get("type", "custom")
-        image, port, command = _app_config(app_type, workspace_id, app_id)
-        cdef: dict = {
-            "name": app_id,
-            "image": image,
-            "portMappings": [{"containerPort": port, "protocol": "tcp"}],
+    base_path = f"/workspace{workspace_id}"
+
+    landing_page_cmd = [
+        "sh", "-c",
+        f"npm install && WORKSPACE_ID={workspace_id} BASE_PATH={base_path} "
+        f"DOMAIN={DOMAIN} ENVOY_ADMIN_PORT={ENVOY_ADMIN_PORT} "
+        f"node /app/server.js"
+    ]
+
+    envoy_cmd = [
+        "sh", "-c",
+        # Wait for landing page to write initial config, then start envoy
+        "until [ -f /etc/envoy/envoy.yaml ]; do sleep 1; done && "
+        "envoy -c /etc/envoy/envoy.yaml --log-level warn"
+    ]
+
+    container_defs = [
+        {
+            "name": "landing-page",
+            "image": _NODE,
+            "portMappings": [{"containerPort": LANDING_PAGE_PORT, "protocol": "tcp"}],
+            "command": landing_page_cmd,
+            "essential": True,
+            "mountPoints": [{"sourceVolume": "envoy-config", "containerPath": "/etc/envoy"}],
+            "environment": [
+                {"name": "WORKSPACE_ID", "value": workspace_id},
+                {"name": "BASE_PATH", "value": base_path},
+                {"name": "DOMAIN", "value": DOMAIN},
+                {"name": "ENVOY_ADMIN_PORT", "value": str(ENVOY_ADMIN_PORT)},
+            ],
             "logConfiguration": {
                 "logDriver": "awslogs",
                 "options": {
-                    "awslogs-group":         LOG_GROUP,
-                    "awslogs-region":        REGION,
-                    "awslogs-stream-prefix": f"{workspace_id}/{app_id}",
+                    "awslogs-group": LOG_GROUP,
+                    "awslogs-region": REGION,
+                    "awslogs-stream-prefix": f"{workspace_id}/landing-page",
                 },
             },
+        },
+        {
+            "name": "envoy",
+            "image": _ENVOY,
+            "portMappings": [
+                {"containerPort": ENVOY_PORT, "protocol": "tcp"},
+                {"containerPort": ENVOY_ADMIN_PORT, "protocol": "tcp"},
+            ],
+            "command": envoy_cmd,
             "essential": True,
-        }
-        if command:
-            cdef["command"] = command
-        container_defs.append(cdef)
+            "mountPoints": [{"sourceVolume": "envoy-config", "containerPath": "/etc/envoy"}],
+            "dependsOn": [{"containerName": "landing-page", "condition": "START"}],
+            "logConfiguration": {
+                "logDriver": "awslogs",
+                "options": {
+                    "awslogs-group": LOG_GROUP,
+                    "awslogs-region": REGION,
+                    "awslogs-stream-prefix": f"{workspace_id}/envoy",
+                },
+            },
+        },
+    ]
 
-    log.info("Registering task definition: family=%s containers=%s", family, [c["name"] for c in container_defs])
+    volumes = [{"name": "envoy-config"}]  # emptyDir — shared between containers
+
+    log.info("Registering workspace task definition: family=%s", family)
     resp = ecs.register_task_definition(
         family=family,
         networkMode="awsvpc",
@@ -227,18 +327,66 @@ def register_workspace_task_definition(workspace_id: str, apps: list[dict]) -> s
         cpu="512",
         memory="1024",
         executionRoleArn=EXEC_ROLE_ARN,
-        taskRoleArn=TASK_ROLE_ARN,
         containerDefinitions=container_defs,
+        volumes=volumes,
         tags=[{"key": "WorkspaceId", "value": workspace_id}],
     )
     arn = resp["taskDefinition"]["taskDefinitionArn"]
-    log.info("Task definition registered: %s", arn)
+    log.info("Workspace task definition registered: %s", arn)
     return arn
 
+def register_app_task_definition(workspace_id: str, app_def: dict, app_role_arn: str) -> str:
+    """Register a single-container task definition for one app.
+    Uses the workspace-scoped IAM role for strong isolation.
+    """
+    app_id   = app_def.get("name", "app")
+    app_type = app_def.get("type", "custom")
+    family   = app_task_family(workspace_id, app_id)
+    image, port, command = _app_config(app_type, workspace_id, app_id)
+
+    cdef: dict = {
+        "name": app_id,
+        "image": image,
+        "portMappings": [{"containerPort": port, "protocol": "tcp"}],
+        "essential": True,
+        "logConfiguration": {
+            "logDriver": "awslogs",
+            "options": {
+                "awslogs-group": LOG_GROUP,
+                "awslogs-region": REGION,
+                "awslogs-stream-prefix": f"{workspace_id}/{app_id}",
+            },
+        },
+    }
+    if command:
+        cdef["command"] = command
+
+    log.info("Registering app task definition: family=%s", family)
+    resp = ecs.register_task_definition(
+        family=family,
+        networkMode="awsvpc",
+        requiresCompatibilities=["FARGATE"],
+        cpu="256",
+        memory="512",
+        executionRoleArn=EXEC_ROLE_ARN,
+        taskRoleArn=app_role_arn,
+        containerDefinitions=[cdef],
+        tags=[
+            {"key": "WorkspaceId", "value": workspace_id},
+            {"key": "AppId", "value": app_id},
+            {"key": "AppType", "value": app_type},
+        ],
+    )
+    arn = resp["taskDefinition"]["taskDefinitionArn"]
+    log.info("App task definition registered: %s", arn)
+    return arn
+
+# ---------------------------------------------------------------------------
+# ECS service (workspace)
+# ---------------------------------------------------------------------------
 def ensure_workspace_service(workspace_id: str, task_def_arn: str) -> str:
-    """Create or update the workspace ECS service (desiredCount=1, always running).
-    The service scheduler launches the task — this is what makes it visible in the
-    ECS console under the service, not as a standalone task.
+    """Create or update the workspace ECS service (landing page + envoy).
+    desiredCount=1, always running, service-scheduler managed.
     """
     name = workspace_service_name(workspace_id)
 
@@ -277,37 +425,116 @@ def ensure_workspace_service(workspace_id: str, task_def_arn: str) -> str:
     log.info("Workspace service created: %s", name)
     return name
 
-def ensure_target_group(workspace_id: str, app_id: str, port: int) -> str:
-    tg_name = app_tg_name(workspace_id, app_id)
+# ---------------------------------------------------------------------------
+# App tasks (run_task — standalone)
+# ---------------------------------------------------------------------------
+def run_app_task(workspace_id: str, app_def: dict, task_def_arn: str, app_role_arn: str) -> str | None:
+    """Launch a standalone app task via run_task.
+    Tagged with WorkspaceId and AppId for later lookup.
+    Uses workspace-scoped IAM role for isolation.
+    Note: task will NOT appear under the workspace service in ECS console.
+    """
+    app_id = app_def.get("name", "app")
+    log.info("Launching app task: workspace=%s app=%s", workspace_id, app_id)
+    resp = ecs.run_task(
+        cluster=CLUSTER,
+        taskDefinition=task_def_arn,
+        launchType="FARGATE",
+        networkConfiguration={
+            "awsvpcConfiguration": {
+                "subnets": PRIVATE_SUBNETS,
+                "securityGroups": [TASK_SG],
+                "assignPublicIp": "DISABLED",
+            }
+        },
+        overrides={"taskRoleArn": app_role_arn},
+        tags=[
+            {"key": "WorkspaceId", "value": workspace_id},
+            {"key": "AppId", "value": app_id},
+        ],
+        enableECSManagedTags=True,
+        propagateTags="TASK_DEFINITION",
+    )
+    failures = resp.get("failures", [])
+    if failures:
+        log.warning("run_task failures: %s", failures)
+        return None
+    task_arn = resp["tasks"][0]["taskArn"]
+    log.info("App task launched: %s", task_arn)
+    return task_arn
+
+def stop_app_task(workspace_id: str, app_id: str) -> bool:
+    """Stop the running app task for a given workspace/app."""
+    task_arns = _find_app_task_arns(workspace_id, app_id)
+    if not task_arns:
+        log.warning("No running task found for workspace=%s app=%s", workspace_id, app_id)
+        return False
+    for arn in task_arns:
+        log.info("Stopping app task: %s", arn)
+        ecs.stop_task(cluster=CLUSTER, task=arn, reason=f"app/stop called for {app_id}")
+    return True
+
+def _find_app_task_arns(workspace_id: str, app_id: str) -> list[str]:
+    """Find running task ARNs for a given workspace/app by tag filter."""
+    try:
+        arns = ecs.list_tasks(
+            cluster=CLUSTER,
+            family=app_task_family(workspace_id, app_id),
+            desiredStatus="RUNNING",
+        ).get("taskArns", [])
+        return arns
+    except Exception as e:
+        log.warning("Could not find app task arns: %s", e)
+        return []
+
+# ---------------------------------------------------------------------------
+# Target group + ALB (1 per workspace, points to Envoy)
+# ---------------------------------------------------------------------------
+def get_https_listener_arn() -> str | None:
+    try:
+        lbs = elbv2.describe_load_balancers()["LoadBalancers"]
+        alb = next((lb for lb in lbs if "ecs-app-tester" in lb["LoadBalancerName"]), None)
+        if not alb:
+            return None
+        listeners = elbv2.describe_listeners(LoadBalancerArn=alb["LoadBalancerArn"])["Listeners"]
+        https = next((l for l in listeners if l["Port"] == 443), None)
+        return https["ListenerArn"] if https else None
+    except Exception as e:
+        log.warning("Could not resolve HTTPS listener: %s", e)
+        return None
+
+def ensure_workspace_target_group(workspace_id: str) -> str:
+    """One target group per workspace, pointing at Envoy port."""
+    tg_name = workspace_tg_name(workspace_id)
     try:
         existing = elbv2.describe_target_groups(Names=[tg_name])["TargetGroups"]
         if existing:
             arn = existing[0]["TargetGroupArn"]
-            log.info("Target group already exists: %s", arn)
+            log.info("Workspace TG already exists: %s", arn)
             return arn
     except elbv2.exceptions.TargetGroupNotFoundException:
         pass
 
-    log.info("Creating target group: %s port=%d", tg_name, port)
+    log.info("Creating workspace target group: %s port=%d", tg_name, ENVOY_PORT)
     resp = elbv2.create_target_group(
         Name=tg_name,
         Protocol="HTTP",
-        Port=port,
+        Port=ENVOY_PORT,
         VpcId=VPC_ID,
         TargetType="ip",
         HealthCheckProtocol="HTTP",
-        HealthCheckPath="/",
+        HealthCheckPath="/healthz",
         HealthCheckIntervalSeconds=30,
         HealthyThresholdCount=2,
         UnhealthyThresholdCount=3,
         Matcher={"HttpCode": "200-499"},
     )
     arn = resp["TargetGroups"][0]["TargetGroupArn"]
-    log.info("Target group created: %s", arn)
+    log.info("Workspace TG created: %s", arn)
     return arn
 
-def find_listener_rule(listener_arn: str, workspace_id: str, app_id: str) -> dict | None:
-    path = f"/workspace{workspace_id}/{app_id}*"
+def find_workspace_listener_rule(listener_arn: str, workspace_id: str) -> dict | None:
+    path = f"/workspace{workspace_id}*"
     rules = elbv2.describe_rules(ListenerArn=listener_arn)["Rules"]
     for rule in rules:
         for cond in rule.get("Conditions", []):
@@ -315,74 +542,40 @@ def find_listener_rule(listener_arn: str, workspace_id: str, app_id: str) -> dic
                 return rule
     return None
 
-def ensure_listener_rule(workspace_id: str, app_id: str, tg_arn: str, enabled: bool = False) -> str:
-    """Create listener rule as fixed-response 503 (disabled) by default."""
+def ensure_workspace_listener_rule(workspace_id: str, tg_arn: str) -> str:
+    """One ALB rule per workspace: /workspace{id}/* → workspace TG (Envoy).
+    Always forward — Envoy handles the per-app routing internally.
+    """
     listener_arn = get_https_listener_arn()
     if not listener_arn:
         log.warning("No HTTPS listener found — skipping listener rule")
         return ""
 
-    existing = find_listener_rule(listener_arn, workspace_id, app_id)
+    existing = find_workspace_listener_rule(listener_arn, workspace_id)
     if existing:
-        log.info("Listener rule already exists: %s", existing["RuleArn"])
+        log.info("Workspace listener rule already exists: %s", existing["RuleArn"])
         return existing["RuleArn"]
 
-    path = f"/workspace{workspace_id}/{app_id}*"
+    path = f"/workspace{workspace_id}*"
     used = {int(r["Priority"]) for r in elbv2.describe_rules(ListenerArn=listener_arn)["Rules"] if r["Priority"].isdigit()}
     priority = next(p for p in range(100, 400) if p not in used)
 
-    action = _forward_action(tg_arn) if enabled else _disabled_action()
-    log.info("Creating listener rule: path=%s priority=%d enabled=%s", path, priority, enabled)
+    log.info("Creating workspace listener rule: path=%s priority=%d", path, priority)
     resp = elbv2.create_rule(
         ListenerArn=listener_arn,
         Priority=priority,
         Conditions=[{"Field": "path-pattern", "Values": [path]}],
-        Actions=[action],
+        Actions=[{"Type": "forward", "TargetGroupArn": tg_arn}],
     )
     rule_arn = resp["Rules"][0]["RuleArn"]
-    log.info("Listener rule created: %s", rule_arn)
+    log.info("Workspace listener rule created: %s", rule_arn)
     return rule_arn
 
-def _forward_action(tg_arn: str) -> dict:
-    return {"Type": "forward", "TargetGroupArn": tg_arn}
-
-def _disabled_action() -> dict:
-    return {
-        "Type": "fixed-response",
-        "FixedResponseConfig": {
-            "StatusCode": "503",
-            "ContentType": "text/plain",
-            "MessageBody": "App is stopped",
-        },
-    }
-
-def set_app_rule_enabled(workspace_id: str, app_id: str, enabled: bool) -> bool:
-    listener_arn = get_https_listener_arn()
-    if not listener_arn:
-        log.warning("No HTTPS listener — cannot toggle rule")
-        return False
-
-    rule = find_listener_rule(listener_arn, workspace_id, app_id)
-    if not rule:
-        log.warning("No listener rule found for workspace=%s app=%s", workspace_id, app_id)
-        return False
-
-    tg_arn = None
-    try:
-        tg_name = app_tg_name(workspace_id, app_id)
-        tgs = elbv2.describe_target_groups(Names=[tg_name])["TargetGroups"]
-        if tgs:
-            tg_arn = tgs[0]["TargetGroupArn"]
-    except Exception:
-        pass
-
-    action = _forward_action(tg_arn) if (enabled and tg_arn) else _disabled_action()
-    log.info("Setting rule %s enabled=%s", rule["RuleArn"], enabled)
-    elbv2.modify_rule(RuleArn=rule["RuleArn"], Actions=[action])
-    return True
-
+# ---------------------------------------------------------------------------
+# Task IP helpers
+# ---------------------------------------------------------------------------
 def wait_for_task_running(service_name: str, retries: int = 24, delay: int = 5) -> str | None:
-    """Wait for the service scheduler to start a task. Returns task ARN."""
+    """Wait for the workspace service scheduler to start a task. Returns task ARN."""
     for attempt in range(retries):
         try:
             task_arns = ecs.list_tasks(cluster=CLUSTER, serviceName=service_name, desiredStatus="RUNNING").get("taskArns", [])
@@ -394,6 +587,24 @@ def wait_for_task_running(service_name: str, retries: int = 24, delay: int = 5) 
         time.sleep(delay)
     log.warning("Timed out waiting for task for service %s", service_name)
     return None
+
+def wait_for_app_task_running(task_arn: str, retries: int = 24, delay: int = 5) -> bool:
+    """Wait for a standalone run_task task to reach RUNNING."""
+    for attempt in range(retries):
+        try:
+            tasks = ecs.describe_tasks(cluster=CLUSTER, tasks=[task_arn])["tasks"]
+            if tasks:
+                status = tasks[0].get("lastStatus", "")
+                if status == "RUNNING":
+                    return True
+                if status == "STOPPED":
+                    log.warning("App task stopped: %s", tasks[0].get("stoppedReason"))
+                    return False
+        except Exception as e:
+            log.warning("Waiting for app task RUNNING (attempt %d/%d): %s", attempt + 1, retries, e)
+        time.sleep(delay)
+    log.warning("Timed out waiting for app task %s", task_arn)
+    return False
 
 def wait_for_task_ip(task_arn: str, retries: int = 12, delay: int = 5) -> str | None:
     for attempt in range(retries):
@@ -413,39 +624,48 @@ def wait_for_task_ip(task_arn: str, retries: int = 12, delay: int = 5) -> str | 
     log.warning("Timed out waiting for IP for task %s", task_arn)
     return None
 
-def register_task_to_tgs(task_arn: str, workspace_id: str, apps: list[dict]) -> None:
-    """Get task's private IP and register it to each app's target group."""
+def register_workspace_to_tg(task_arn: str, tg_arn: str) -> None:
+    """Register the workspace service task IP:ENVOY_PORT to the workspace TG."""
     ip = wait_for_task_ip(task_arn)
     if not ip:
-        log.warning("Could not get task IP — skipping TG registration")
+        log.warning("Could not get workspace task IP — skipping TG registration")
         return
-    for app_def in apps:
-        app_id   = app_def.get("name", "app")
-        app_type = app_def.get("type", "custom")
-        _, port, _ = _app_config(app_type)
-        try:
-            tg_arn = ensure_target_group(workspace_id, app_id, port)
-            log.info("Registering %s:%d → %s", ip, port, app_id)
-            elbv2.register_targets(TargetGroupArn=tg_arn, Targets=[{"Id": ip, "Port": port}])
-        except Exception as e:
-            log.warning("Failed to register target for %s: %s", app_id, e)
+    log.info("Registering workspace task %s:%d → TG", ip, ENVOY_PORT)
+    elbv2.register_targets(TargetGroupArn=tg_arn, Targets=[{"Id": ip, "Port": ENVOY_PORT}])
 
-def attach_s3_policy(workspace_id: str, bucket: str) -> None:
-    policy_name = f"{workspace_id}-s3-access"
-    policy_doc = json.dumps({
-        "Version": "2012-10-17",
-        "Statement": [{
-            "Effect": "Allow",
-            "Action": ["s3:GetObject", "s3:ListBucket", "s3:GetObjectVersion"],
-            "Resource": [f"arn:aws:s3:::{bucket}", f"arn:aws:s3:::{bucket}/*"],
-        }],
-    })
-    role_name = TASK_ROLE_ARN.split("/")[-1]
-    log.info("Attaching S3 policy %s to role %s", policy_name, role_name)
+# ---------------------------------------------------------------------------
+# Envoy route management via landing page internal API
+# ---------------------------------------------------------------------------
+def get_landing_page_ip(workspace_id: str) -> str | None:
+    """Return the private IP of the workspace service task (landing page + envoy)."""
+    task_arns = ecs.list_tasks(cluster=CLUSTER, serviceName=workspace_id, desiredStatus="RUNNING").get("taskArns", [])
+    if not task_arns:
+        return None
+    return wait_for_task_ip(task_arns[0], retries=3, delay=2)
+
+def register_app_route(workspace_ip: str, app_id: str, app_ip: str, port: int, base_path: str) -> bool:
+    """Tell the landing page to add an Envoy route for this app."""
+    url = f"http://{workspace_ip}:{LANDING_PAGE_PORT}/internal/routes/add"
     try:
-        iam.put_role_policy(RoleName=role_name, PolicyName=policy_name, PolicyDocument=policy_doc)
+        resp = httpx.post(url, json={"appId": app_id, "appIP": app_ip, "port": port, "basePath": base_path}, timeout=10)
+        resp.raise_for_status()
+        log.info("Registered Envoy route for app %s → %s:%d", app_id, app_ip, port)
+        return True
     except Exception as e:
-        log.warning("Could not attach S3 policy: %s", e)
+        log.warning("Failed to register Envoy route for app %s: %s", app_id, e)
+        return False
+
+def deregister_app_route(workspace_ip: str, app_id: str) -> bool:
+    """Tell the landing page to remove the Envoy route for this app."""
+    url = f"http://{workspace_ip}:{LANDING_PAGE_PORT}/internal/routes/remove"
+    try:
+        resp = httpx.post(url, json={"appId": app_id}, timeout=10)
+        resp.raise_for_status()
+        log.info("Deregistered Envoy route for app %s", app_id)
+        return True
+    except Exception as e:
+        log.warning("Failed to deregister Envoy route for app %s: %s", app_id, e)
+        return False
 
 # ---------------------------------------------------------------------------
 # Routes
@@ -461,57 +681,97 @@ def health():
     return {
         "status": "ok",
         "region": REGION,
-        "caller_identity": caller,
         "cluster": CLUSTER,
+        "domain": DOMAIN,
+        "caller_identity": caller,
         "vpc_id": VPC_ID,
         "private_subnets": PRIVATE_SUBNETS,
         "task_sg": TASK_SG,
         "exec_role_arn": EXEC_ROLE_ARN,
         "infra_loaded": bool(INFRA),
+        "arch": "per-app-run_task+envoy",
     }
 
 @app.post("/workspace/bootstrap")
 def bootstrap_workspace(payload: WorkspaceBootstrap):
     """
-    1. Register a multi-container task def — one container per app, one task total.
-       All containers share the same ENI so they appear under one service in ECS console.
-    2. Create/update workspace ECS service (desiredCount=1, always running).
-       The service scheduler launches the task — mandatory for console visibility.
-    3. Create target groups + disabled ALB listener rules per app.
-    4. Wait for task running, register task IP to all TGs.
+    1. Create workspace-scoped IAM role for app tasks.
+    2. Register workspace service task def (landing-page + envoy).
+    3. Create/update workspace ECS service (desiredCount=1).
+    4. Create workspace target group (→ Envoy port) + ALB listener rule.
+    5. Wait for workspace service task to be running, register to TG.
+    6. For each app:
+       a. Register single-container app task definition.
+       b. run_task with workspace IAM role.
+       c. Wait for task running + get IP.
+       d. POST to landing page /internal/routes/add.
     """
     try:
-        if payload.s3Bucket:
-            attach_s3_policy(payload.workspaceId, payload.s3Bucket)
+        workspace_id = payload.workspaceId
 
-        task_def_arn = register_workspace_task_definition(payload.workspaceId, payload.apps)
-        svc_name = ensure_workspace_service(payload.workspaceId, task_def_arn)
+        # 1. IAM role
+        app_role_arn = create_workspace_iam_role(workspace_id)
 
+        # 2. Workspace task def (landing page + envoy)
+        workspace_task_def_arn = register_workspace_task_definition(workspace_id)
+
+        # 3. Workspace service
+        svc_name = ensure_workspace_service(workspace_id, workspace_task_def_arn)
+
+        # 4. TG + ALB rule
+        tg_arn = ensure_workspace_target_group(workspace_id)
+        ensure_workspace_listener_rule(workspace_id, tg_arn)
+
+        # 5. Wait for workspace service task, register to TG
+        log.info("Waiting for workspace service task to be running...")
+        workspace_task_arn = wait_for_task_running(svc_name)
+        if workspace_task_arn:
+            register_workspace_to_tg(workspace_task_arn, tg_arn)
+        else:
+            log.warning("Workspace task did not reach RUNNING — TG registration skipped")
+
+        # Get workspace task IP for Envoy route management
+        workspace_ip = wait_for_task_ip(workspace_task_arn) if workspace_task_arn else None
+
+        # 6. Per-app: register task def, run_task, register Envoy route
+        app_results = {}
         for app_def in payload.apps:
             app_id   = app_def.get("name", "app")
             app_type = app_def.get("type", "custom")
             _, port, _ = _app_config(app_type)
-            tg_arn = ensure_target_group(payload.workspaceId, app_id, port)
-            ensure_listener_rule(payload.workspaceId, app_id, tg_arn, enabled=False)
+            base_path = f"/workspace{workspace_id}/{app_id}"
 
-        log.info("Waiting for workspace service task to be running...")
-        task_arn = wait_for_task_running(svc_name)
-        if task_arn:
-            register_task_to_tgs(task_arn, payload.workspaceId, payload.apps)
-        else:
-            log.warning("Task did not reach RUNNING — TG registration skipped")
+            try:
+                app_task_def_arn = register_app_task_definition(workspace_id, app_def, app_role_arn)
+                app_task_arn = run_app_task(workspace_id, app_def, app_task_def_arn, app_role_arn)
+
+                app_ip = None
+                if app_task_arn:
+                    running = wait_for_app_task_running(app_task_arn)
+                    if running:
+                        app_ip = wait_for_task_ip(app_task_arn)
+
+                route_registered = False
+                if app_ip and workspace_ip:
+                    route_registered = register_app_route(workspace_ip, app_id, app_ip, port, base_path)
+
+                app_results[app_id] = {
+                    "url": app_url(workspace_id, app_id),
+                    "taskArn": app_task_arn,
+                    "ip": app_ip,
+                    "routeRegistered": route_registered,
+                    "status": "running" if (app_ip and route_registered) else "starting",
+                }
+            except Exception as app_exc:
+                log.exception("Failed to bootstrap app %s", app_id)
+                app_results[app_id] = {"error": str(app_exc)}
 
         return {
             "status": "workspace bootstrapped",
-            "workspaceId": payload.workspaceId,
+            "workspaceId": workspace_id,
             "service": svc_name,
-            "apps": {
-                app_def.get("name", "app"): {
-                    "url": app_url(payload.workspaceId, app_def.get("name", "app")),
-                    "status": "stopped (call /app/start to enable)",
-                }
-                for app_def in payload.apps
-            },
+            "workspaceUrl": workspace_url(workspace_id),
+            "apps": app_results,
         }
     except Exception as exc:
         log.exception("bootstrap_workspace failed")
@@ -519,36 +779,46 @@ def bootstrap_workspace(payload: WorkspaceBootstrap):
 
 @app.get("/workspace/{workspace_id}/apps")
 def list_workspace_apps(workspace_id: str):
-    """List apps by inspecting the running service task's containers and ALB rule states."""
+    """List apps by finding run_task tasks tagged with WorkspaceId
+    and cross-referencing with Envoy route state from landing page.
+    """
     try:
-        task_arns = ecs.list_tasks(
-            cluster=CLUSTER, serviceName=workspace_id, desiredStatus="RUNNING"
-        ).get("taskArns", [])
+        # Get Envoy route state from landing page
+        workspace_ip = get_landing_page_ip(workspace_id)
+        routes = {}
+        if workspace_ip:
+            try:
+                resp = httpx.get(
+                    f"http://{workspace_ip}:{LANDING_PAGE_PORT}/internal/routes",
+                    timeout=5,
+                )
+                if resp.status_code == 200:
+                    routes = resp.json().get("routes", {})
+            except Exception as e:
+                log.warning("Could not fetch Envoy routes from landing page: %s", e)
 
-        if not task_arns:
-            return {"workspaceId": workspace_id, "apps": []}
-
-        tasks = ecs.describe_tasks(cluster=CLUSTER, tasks=task_arns[:1])["tasks"]
-        if not tasks:
-            return {"workspaceId": workspace_id, "apps": []}
-
-        task = tasks[0]
-        container_names = [c["name"] for c in task.get("containers", [])]
-
-        listener_arn = get_https_listener_arn()
+        # Find app tasks by listing task families matching {workspaceId}-*-task
         apps = []
-        for app_id in container_names:
-            status = "stopped"
-            if listener_arn:
-                rule = find_listener_rule(listener_arn, workspace_id, app_id)
-                if rule:
-                    action_type = rule.get("Actions", [{}])[0].get("Type", "")
-                    status = "running" if action_type == "forward" else "stopped"
-            apps.append({
-                "appId":  app_id,
-                "status": status,
-                "url":    app_url(workspace_id, app_id),
-            })
+        task_families_resp = ecs.list_task_definition_families(
+            familyPrefix=f"{workspace_id}-",
+            status="ACTIVE",
+        )
+        for family in task_families_resp.get("families", []):
+            # Skip the workspace service task itself
+            if family == workspace_task_family(workspace_id):
+                continue
+            # Extract app_id: "{workspaceId}-{appId}-task" → "{appId}"
+            prefix = f"{workspace_id}-"
+            suffix = "-task"
+            if family.startswith(prefix) and family.endswith(suffix):
+                app_id = family[len(prefix):-len(suffix)]
+                in_route = app_id in routes
+                task_arns = _find_app_task_arns(workspace_id, app_id)
+                apps.append({
+                    "appId": app_id,
+                    "status": "running" if (task_arns and in_route) else "stopped",
+                    "url": app_url(workspace_id, app_id),
+                })
 
         return {"workspaceId": workspace_id, "apps": apps}
     except Exception as exc:
@@ -557,18 +827,68 @@ def list_workspace_apps(workspace_id: str):
 
 @app.post("/app/start")
 def start_app(payload: AppAction):
-    """Enable the ALB listener rule → traffic flows to the app container."""
+    """Start an app: run_task if not running, then register Envoy route."""
     try:
-        ok = set_app_rule_enabled(payload.workspaceId, payload.appId, enabled=True)
-        if not ok:
-            raise RuntimeError(
-                f"No listener rule for workspace={payload.workspaceId} app={payload.appId}. Run bootstrap first."
-            )
+        workspace_id = payload.workspaceId
+        app_id       = payload.appId
+
+        # Check if already running
+        task_arns = _find_app_task_arns(workspace_id, app_id)
+        app_ip = None
+
+        if task_arns:
+            app_ip = wait_for_task_ip(task_arns[0], retries=3, delay=2)
+            log.info("App task already running: %s ip=%s", task_arns[0], app_ip)
+        else:
+            # Re-run the task using the latest registered task definition
+            family = app_task_family(workspace_id, app_id)
+            app_role_arn = iam.get_role(RoleName=workspace_iam_role_name(workspace_id))["Role"]["Arn"]
+
+            # Get latest task def revision
+            task_defs = ecs.list_task_definitions(familyPrefix=family, sort="DESC", maxResults=1)
+            if not task_defs["taskDefinitionArns"]:
+                raise RuntimeError(f"No task definition found for {family}. Bootstrap workspace first.")
+            task_def_arn = task_defs["taskDefinitionArns"][0]
+
+            # Reconstruct app_def from task definition to get app type
+            td = ecs.describe_task_definition(taskDefinition=task_def_arn)["taskDefinition"]
+            # App type stored in task definition tags at registration time
+            td_tags = {t["key"]: t["value"] for t in td.get("tags", [])}
+            app_type = td_tags.get("AppType", "custom")
+            app_def = {"name": app_id, "type": app_type}
+
+            app_task_arn = run_app_task(workspace_id, app_def, task_def_arn, app_role_arn)
+            if not app_task_arn:
+                raise RuntimeError("run_task failed")
+
+            running = wait_for_app_task_running(app_task_arn)
+            if not running:
+                raise RuntimeError("App task failed to reach RUNNING")
+
+            app_ip = wait_for_task_ip(app_task_arn)
+
+        if not app_ip:
+            raise RuntimeError("Could not get app task IP")
+
+        # Register route in Envoy via landing page
+        workspace_ip = get_landing_page_ip(workspace_id)
+        if not workspace_ip:
+            raise RuntimeError("Workspace service not running — cannot register route")
+
+        # Get port from task definition
+        family = app_task_family(workspace_id, app_id)
+        task_defs = ecs.list_task_definitions(familyPrefix=family, sort="DESC", maxResults=1)
+        td = ecs.describe_task_definition(taskDefinition=task_defs["taskDefinitionArns"][0])["taskDefinition"]
+        port = td["containerDefinitions"][0]["portMappings"][0]["containerPort"]
+        base_path = f"/workspace{workspace_id}/{app_id}"
+
+        register_app_route(workspace_ip, app_id, app_ip, port, base_path)
+
         return {
             "status": "app started",
-            "workspaceId": payload.workspaceId,
-            "appId": payload.appId,
-            "url": app_url(payload.workspaceId, payload.appId),
+            "workspaceId": workspace_id,
+            "appId": app_id,
+            "url": app_url(workspace_id, app_id),
         }
     except Exception as exc:
         log.exception("start_app failed")
@@ -576,38 +896,28 @@ def start_app(payload: AppAction):
 
 @app.post("/app/stop")
 def stop_app(payload: AppAction):
-    """Disable the ALB listener rule → 503 returned. Container keeps running."""
+    """Stop an app: deregister Envoy route, then stop_task."""
     try:
-        ok = set_app_rule_enabled(payload.workspaceId, payload.appId, enabled=False)
-        if not ok:
-            raise RuntimeError(
-                f"No listener rule for workspace={payload.workspaceId} app={payload.appId}."
-            )
+        workspace_id = payload.workspaceId
+        app_id       = payload.appId
+
+        # Deregister from Envoy first
+        workspace_ip = get_landing_page_ip(workspace_id)
+        if workspace_ip:
+            deregister_app_route(workspace_ip, app_id)
+        else:
+            log.warning("Workspace service IP not found — skipping Envoy deregistration")
+
+        # Stop the task
+        stopped = stop_app_task(workspace_id, app_id)
+        if not stopped:
+            log.warning("No running task found for app %s — may already be stopped", app_id)
+
         return {
             "status": "app stopped",
-            "workspaceId": payload.workspaceId,
-            "appId": payload.appId,
+            "workspaceId": workspace_id,
+            "appId": app_id,
         }
     except Exception as exc:
         log.exception("stop_app failed")
-        raise HTTPException(status_code=500, detail=str(exc))
-
-@app.put("/app/sync")
-def sync_app(payload: AppSync):
-    try:
-        prefix = payload.s3Prefix or ""
-        log.info("Syncing s3://%s/%s → workspace=%s app=%s", payload.s3Bucket, prefix, payload.workspaceId, payload.appId)
-        paginator = s3.get_paginator("list_objects_v2")
-        keys = []
-        for page in paginator.paginate(Bucket=payload.s3Bucket, Prefix=prefix):
-            keys.extend(obj["Key"] for obj in page.get("Contents", []))
-        log.info("Found %d objects to sync", len(keys))
-        return {
-            "status": "sync queued",
-            "workspaceId": payload.workspaceId,
-            "appId": payload.appId,
-            "objects_found": len(keys),
-        }
-    except Exception as exc:
-        log.exception("sync_app failed")
         raise HTTPException(status_code=500, detail=str(exc))

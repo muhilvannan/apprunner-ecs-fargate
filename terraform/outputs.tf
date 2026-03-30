@@ -110,7 +110,7 @@ output "alb_arn" {
 
 # Domain Outputs
 output "domain_name" {
-  value       = "brewer.muhilvannan.com"
+  value       = "builder.muhilvannan.com"
   description = "Custom domain name"
 }
 

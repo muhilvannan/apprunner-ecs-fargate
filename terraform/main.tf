@@ -21,7 +21,7 @@ provider "aws" {
 }
 
 locals {
-  cluster_name = "ecs-app-tester-${var.environment}"
+  cluster_name = "ecs-app-tester-exp-${var.environment}"
   namespace    = "workspace-discovery.local"
-  project      = "ecs-app-tester"
+  project      = "ecs-app-tester-exp"
 }

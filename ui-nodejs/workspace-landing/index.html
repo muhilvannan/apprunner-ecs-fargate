@@ -1,0 +1,408 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Workspace __WORKSPACE_ID__</title>
+    <style>
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #0a0d14;
+            color: #e2e8f0;
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+
+        /* ---- Header ---- */
+        .header {
+            background: #161b27;
+            border-bottom: 1px solid #1e293b;
+            padding: 14px 24px;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            flex-shrink: 0;
+        }
+
+        .header h1 {
+            font-size: 1rem;
+            font-weight: 600;
+            color: #f8fafc;
+        }
+
+        .header .ws-id {
+            font-size: 0.75rem;
+            font-family: 'SF Mono', 'Fira Code', monospace;
+            color: #60a5fa;
+            background: #1e3a5f;
+            border: 1px solid #2563eb44;
+            padding: 2px 8px;
+            border-radius: 4px;
+        }
+
+        .header .refresh-btn {
+            margin-left: auto;
+            background: none;
+            border: 1px solid #1e293b;
+            color: #64748b;
+            border-radius: 6px;
+            padding: 5px 12px;
+            font-size: 0.75rem;
+            cursor: pointer;
+            font-family: inherit;
+            transition: color 0.15s, border-color 0.15s;
+        }
+
+        .header .refresh-btn:hover { color: #e2e8f0; border-color: #334155; }
+
+        /* ---- Layout ---- */
+        .layout {
+            display: flex;
+            flex: 1;
+            overflow: hidden;
+        }
+
+        /* ---- Sidebar ---- */
+        .sidebar {
+            width: 260px;
+            flex-shrink: 0;
+            background: #161b27;
+            border-right: 1px solid #1e293b;
+            padding: 16px;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+        }
+
+        .sidebar-section-title {
+            font-size: 0.65rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            color: #475569;
+            margin-bottom: 8px;
+        }
+
+        /* ---- App card in sidebar ---- */
+        .app-card {
+            background: #0f1117;
+            border: 1px solid #1e293b;
+            border-radius: 8px;
+            padding: 12px;
+            margin-bottom: 8px;
+        }
+
+        .app-card-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 8px;
+        }
+
+        .app-name {
+            font-size: 0.875rem;
+            font-weight: 600;
+            color: #f1f5f9;
+        }
+
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            flex-shrink: 0;
+        }
+
+        .status-dot.running { background: #4ade80; box-shadow: 0 0 6px #4ade8088; }
+        .status-dot.stopped { background: #475569; }
+
+        .app-type-label {
+            font-size: 0.65rem;
+            color: #475569;
+            margin-bottom: 8px;
+            font-family: 'SF Mono', 'Fira Code', monospace;
+        }
+
+        .app-actions {
+            display: flex;
+            gap: 6px;
+        }
+
+        .btn-sm {
+            flex: 1;
+            padding: 5px 8px;
+            border: none;
+            border-radius: 5px;
+            font-size: 0.7rem;
+            font-weight: 500;
+            cursor: pointer;
+            font-family: inherit;
+            transition: opacity 0.15s;
+        }
+
+        .btn-sm:hover { opacity: 0.85; }
+        .btn-sm:disabled { opacity: 0.35; cursor: not-allowed; }
+
+        .btn-sm-start { background: #16a34a; color: #fff; }
+        .btn-sm-stop  { background: #dc2626; color: #fff; }
+        .btn-sm-open  { background: #1e3a5f; color: #60a5fa; border: 1px solid #2563eb44 !important; }
+
+        /* ---- Workspace metadata ---- */
+        .meta-row {
+            display: flex;
+            justify-content: space-between;
+            font-size: 0.72rem;
+            padding: 4px 0;
+            border-bottom: 1px solid #1e293b;
+        }
+
+        .meta-row:last-child { border-bottom: none; }
+        .meta-label { color: #475569; }
+        .meta-value { color: #94a3b8; font-family: 'SF Mono', 'Fira Code', monospace; }
+
+        /* ---- Main content — iframes ---- */
+        .content {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        .iframe-tabs {
+            display: flex;
+            gap: 2px;
+            background: #0a0d14;
+            padding: 8px 12px 0;
+            border-bottom: 1px solid #1e293b;
+            flex-shrink: 0;
+            overflow-x: auto;
+        }
+
+        .iframe-tab {
+            padding: 6px 14px;
+            font-size: 0.78rem;
+            border-radius: 6px 6px 0 0;
+            cursor: pointer;
+            color: #64748b;
+            background: #0f1117;
+            border: 1px solid #1e293b;
+            border-bottom: none;
+            white-space: nowrap;
+            transition: color 0.15s, background 0.15s;
+        }
+
+        .iframe-tab.active {
+            background: #161b27;
+            color: #f1f5f9;
+            border-color: #334155;
+        }
+
+        .iframe-tab.stopped { opacity: 0.45; cursor: default; }
+
+        .iframe-panels {
+            flex: 1;
+            position: relative;
+        }
+
+        .iframe-panel {
+            position: absolute;
+            inset: 0;
+            display: none;
+        }
+
+        .iframe-panel.active { display: block; }
+
+        .iframe-panel iframe {
+            width: 100%;
+            height: 100%;
+            border: none;
+        }
+
+        .iframe-placeholder {
+            width: 100%;
+            height: 100%;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            gap: 12px;
+            color: #334155;
+        }
+
+        .iframe-placeholder .icon { font-size: 2rem; }
+        .iframe-placeholder p { font-size: 0.85rem; }
+
+        /* ---- Empty state ---- */
+        .empty-state {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            color: #334155;
+            gap: 8px;
+        }
+
+        .empty-state .icon { font-size: 2.5rem; }
+        .empty-state p { font-size: 0.875rem; }
+    </style>
+</head>
+<body>
+
+<div class="header">
+    <h1>Workspace Hub</h1>
+    <span class="ws-id">__WORKSPACE_ID__</span>
+    <button class="refresh-btn" onclick="refresh()">↺ Refresh</button>
+</div>
+
+<div class="layout">
+    <!-- Sidebar -->
+    <div class="sidebar">
+        <div>
+            <div class="sidebar-section-title">Apps</div>
+            <div id="appList">
+                <div style="color:#475569;font-size:0.75rem;">Loading…</div>
+            </div>
+        </div>
+        <div>
+            <div class="sidebar-section-title">Workspace</div>
+            <div id="metaTable">
+                <div class="meta-row">
+                    <span class="meta-label">ID</span>
+                    <span class="meta-value">__WORKSPACE_ID__</span>
+                </div>
+                <div class="meta-row">
+                    <span class="meta-label">Domain</span>
+                    <span class="meta-value">__DOMAIN__</span>
+                </div>
+                <div class="meta-row">
+                    <span class="meta-label">Base path</span>
+                    <span class="meta-value">__BASE_PATH__</span>
+                </div>
+                <div class="meta-row" id="metaRunning">
+                    <span class="meta-label">Running apps</span>
+                    <span class="meta-value" id="runningCount">—</span>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Main content -->
+    <div class="content" id="content">
+        <div class="empty-state">
+            <div class="icon">⬡</div>
+            <p>Loading apps…</p>
+        </div>
+    </div>
+</div>
+
+<script>
+    const WORKSPACE_ID = '__WORKSPACE_ID__';
+    const BASE_PATH    = '__BASE_PATH__';
+
+    let appData = [];
+    let activeTab = null;
+
+    async function loadRoutes() {
+        try {
+            const resp = await fetch('/internal/routes');
+            const data = await resp.json();
+            return data.routes || {};
+        } catch {
+            return {};
+        }
+    }
+
+    async function refresh() {
+        const routes = await loadRoutes();
+        appData = Object.entries(routes).map(([appId, info]) => ({
+            appId,
+            appIP: info.appIP,
+            port: info.port,
+            basePath: info.basePath || `${BASE_PATH}/${appId}`,
+            url: `https://__DOMAIN__${info.basePath || BASE_PATH + '/' + appId}`,
+            status: 'running',
+        }));
+
+        renderSidebar();
+        renderContent();
+        document.getElementById('runningCount').textContent = appData.length;
+    }
+
+    function renderSidebar() {
+        const container = document.getElementById('appList');
+        if (appData.length === 0) {
+            container.innerHTML = '<div style="color:#475569;font-size:0.75rem;">No apps running</div>';
+            return;
+        }
+        container.innerHTML = appData.map(app => `
+            <div class="app-card">
+                <div class="app-card-header">
+                    <span class="app-name">${app.appId}</span>
+                    <span class="status-dot ${app.status}"></span>
+                </div>
+                <div class="app-type-label">${app.basePath}</div>
+                <div class="app-actions">
+                    <button class="btn-sm btn-sm-open" onclick="focusTab('${app.appId}')">View</button>
+                    <a class="btn-sm btn-sm-open" href="${app.url}" target="_blank" rel="noopener">↗</a>
+                </div>
+            </div>
+        `).join('');
+    }
+
+    function renderContent() {
+        const content = document.getElementById('content');
+        if (appData.length === 0) {
+            content.innerHTML = `
+                <div class="empty-state">
+                    <div class="icon">⬡</div>
+                    <p>No apps running in this workspace</p>
+                    <p style="font-size:0.75rem;color:#334155">Bootstrap apps via the control plane UI</p>
+                </div>`;
+            return;
+        }
+
+        if (!activeTab || !appData.find(a => a.appId === activeTab)) {
+            activeTab = appData[0].appId;
+        }
+
+        const tabs = appData.map(app => `
+            <div class="iframe-tab ${app.appId === activeTab ? 'active' : ''}"
+                 onclick="focusTab('${app.appId}')">
+                ${app.appId}
+            </div>
+        `).join('');
+
+        const panels = appData.map(app => `
+            <div class="iframe-panel ${app.appId === activeTab ? 'active' : ''}" id="panel-${app.appId}">
+                <iframe src="${app.url}" title="${app.appId}" loading="lazy"
+                    sandbox="allow-scripts allow-same-origin allow-forms allow-popups"></iframe>
+            </div>
+        `).join('');
+
+        content.innerHTML = `
+            <div class="iframe-tabs">${tabs}</div>
+            <div class="iframe-panels">${panels}</div>
+        `;
+    }
+
+    function focusTab(appId) {
+        activeTab = appId;
+        // Update tab active state without full re-render to preserve iframe state
+        document.querySelectorAll('.iframe-tab').forEach(t => t.classList.remove('active'));
+        document.querySelectorAll('.iframe-panel').forEach(p => p.classList.remove('active'));
+        const tab = document.querySelector(`.iframe-tab[onclick="focusTab('${appId}')"]`);
+        const panel = document.getElementById(`panel-${appId}`);
+        if (tab) tab.classList.add('active');
+        if (panel) panel.classList.add('active');
+    }
+
+    // Initial load + auto-refresh every 15s
+    refresh();
+    setInterval(refresh, 15000);
+</script>
+</body>
+</html>

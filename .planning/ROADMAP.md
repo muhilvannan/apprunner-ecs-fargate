@@ -12,9 +12,11 @@
 
 **Requirements:** INFRA-01, INFRA-02, INFRA-03, CMAP-01, CMAP-04, CTRL-04
 
-**Plans:**
-- [ ] Plan 1-A: Update workspace task definition (remove Envoy container + emptyDir volume)
-- [ ] Plan 1-B: Add Cloud Map service creation to controller bootstrap
+**Plans:** 2 plans
+
+Plans:
+- [ ] 01-01-PLAN.md — Strip Envoy from workspace task definition, fix TG port to LANDING_PAGE_PORT
+- [ ] 01-02-PLAN.md — Add Cloud Map service creation to controller bootstrap
 
 **Success Criteria:**
 1. Workspace bootstrap runs single-container task (landing-page only)

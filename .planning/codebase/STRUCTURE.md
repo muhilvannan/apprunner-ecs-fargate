@@ -1,0 +1,235 @@
+# Codebase Structure
+
+**Analysis Date:** 2026-03-30
+
+## Directory Layout
+
+```
+apprunner-ecs-fargate/
+├── controller-python/          # AWS orchestration backend
+│   ├── main.py                 # FastAPI controller with Boto3 AWS logic
+│   ├── Dockerfile              # Python 3.12-slim, FastAPI
+│   ├── requirements.txt         # Boto3, FastAPI, uvicorn, httpx, pydantic
+│   ├── Makefile                # Docker build/run/stop/clean targets
+│   └── entrypoint.sh           # Health check + uvicorn start
+├── ui-nodejs/                  # Web UI and landing page components
+│   ├── app.js                  # Express.js proxy server (port 3000)
+│   ├── index.html              # Workspace bootstrap/management UI (dark theme)
+│   ├── workspace-landing/       # Landing page app (part of service task)
+│   │   ├── server.js           # Workspace hub + Envoy routes API (port 3001)
+│   │   ├── index.html          # Workspace hub UI with app iframe embeds
+│   │   ├── Dockerfile          # Node.js 20-slim, starts server.js
+│   │   └── package.json        # Express, dependencies
+│   ├── package.json            # Express, body-parser, dependencies
+│   ├── Makefile                # npm install/start targets
+│   └── README.md               # UI documentation
+├── terraform/                  # Infrastructure as Code
+│   ├── main.tf                 # Terraform config + AWS provider setup
+│   ├── variables.tf            # Input variables (aws_region, environment, etc.)
+│   ├── outputs.tf              # Exported outputs → infrastructure-outputs.json
+│   ├── vpc.tf                  # VPC, subnets, security groups, IGW, NAT
+│   ├── ecs.tf                  # ECS cluster definition
+│   ├── ecs-workspaces.tf       # Pre-defined task definitions (streamlit, etc.)
+│   ├── alb.tf                  # ALB, listener, listener rules (base only)
+│   ├── iam.tf                  # IAM execution role, workspace task role
+│   ├── efs.tf                  # EFS file system (shared storage optional)
+│   ├── cloudmap.tf             # Service discovery (experimental, not used)
+│   ├── domain.tf               # Route53 DNS for builder.muhilvannan.com
+│   └── Makefile                # tf init/plan/apply/destroy targets
+├── specs/                      # Architecture & planning documents
+│   ├── adr/                    # Architecture Decision Records
+│   │   ├── 001-cloudmap-not-used.md
+│   │   └── 002-workspace-service-multicontainer-task.md
+│   ├── DEPLOYMENT-GUIDE.md     # Production deployment steps
+│   ├── PROJECT.md              # Project vision & overview
+│   ├── STATE.md                # Current implementation state
+│   ├── ROADMAP.md              # Future direction
+│   └── milestones/             # Version-specific roadmaps
+├── .planning/                  # GSD planning documents
+│   └── codebase/               # Codebase analysis (ARCHITECTURE.md, STRUCTURE.md, etc.)
+├── .claude/                    # Claude instructions
+│   └── CLAUDE.md               # Local project overrides to user's global instructions
+├── CLAUDE.md                   # Project documentation (not git-tracked locally)
+├── README.md                   # Top-level project README
+├── Makefile                    # Root-level targets: api-*, ui-*, tf-*, cleanup-aws
+├── infrastructure-outputs.json # Terraform outputs (never commit)
+├── LICENSE                     # Project license
+└── .gitignore                  # Exclude infrastructure-outputs.json, .env, etc.
+```
+
+## Directory Purposes
+
+**controller-python/:**
+- Purpose: FastAPI microservice for AWS ECS orchestration — manages workspaces, apps, task definitions, target groups, IAM roles
+- Contains: Python source, Docker image, Makefile for containerized execution
+- Key files: `main.py` (all orchestration logic), `requirements.txt` (dependencies)
+
+**ui-nodejs/:**
+- Purpose: Web UI and internal landing page — workspace management dashboard + Envoy configuration API
+- Contains: Express.js apps (UI proxy on port 3000, landing page on port 3001), HTML/CSS, Node.js dependencies
+- Key files: `app.js` (API proxy), `index.html` (bootstrap UI), `workspace-landing/server.js` (routes API + hub)
+
+**terraform/:**
+- Purpose: Infrastructure as Code — provisions VPC, ECS cluster, ALB, IAM, DNS
+- Contains: Terraform modules organized by AWS service, variable definitions, outputs
+- Key files: `main.tf` (provider setup), `variables.tf` (configurable inputs), `outputs.tf` (infrastructure-outputs.json exports)
+
+**specs/:**
+- Purpose: Architecture documentation and decision records
+- Contains: ADRs explaining design choices, deployment guides, roadmaps
+- Key files: `adr/002-*.md` (current multi-container architecture), `DEPLOYMENT-GUIDE.md` (production steps)
+
+**.planning/codebase/:**
+- Purpose: GSD codebase mapping documents consumed by planner/executor
+- Contains: ARCHITECTURE.md, STRUCTURE.md, CONVENTIONS.md, TESTING.md, CONCERNS.md, STACK.md, INTEGRATIONS.md
+- Generated by: `/gsd:map-codebase` with specific focus areas
+
+## Key File Locations
+
+**Entry Points:**
+
+- `ui-nodejs/index.html`: Initial browser landing page (workspace bootstrap form, workspace list)
+- `ui-nodejs/app.js`: Express proxy server entry (CLI: `npm start` on port 3000)
+- `controller-python/main.py`: FastAPI orchestration API (CLI: `python main.py`, uvicorn on port 8000)
+- `ui-nodejs/workspace-landing/server.js`: Workspace hub entry (runs in ECS task container on port 3001)
+
+**Configuration:**
+
+- `terraform/variables.tf`: Input variables (aws_region, environment, etc.)
+- `terraform/outputs.tf`: Exports to infrastructure-outputs.json
+- `infrastructure-outputs.json`: Terraform outputs loaded by controller (VPC, cluster, security group IDs)
+- `controller-python/Dockerfile`: Mounts `~/.aws:ro` + `infrastructure-outputs.json:ro`
+
+**Core Logic:**
+
+- `controller-python/main.py`:
+  - Lines 13-66: App type configurations (streamlit, fastapi, reactjs, mkdocs, custom)
+  - Lines 191-248: IAM role creation with lateral movement deny
+  - Lines 254-336: Workspace task definition (landing-page + envoy containers)
+  - Lines 338-385: App task definition (single container per app)
+  - Lines 695-778: Workspace bootstrap orchestration flow
+  - Lines 780-823: List workspace apps (ECS cross-reference + Envoy route state)
+  - Lines 828-895: Start/stop app (Envoy route add/remove)
+
+- `ui-nodejs/workspace-landing/server.js`:
+  - Lines 24-106: Envoy YAML config generation from in-memory routes map
+  - Lines 138-166: Internal `/internal/routes/add|remove` API for controller
+  - Lines 178-196: Workspace hub UI serving with variable injection
+
+**Testing:**
+
+- No dedicated test files present (testing not implemented at codebase level)
+
+## Naming Conventions
+
+**Files:**
+
+- Controllers: `main.py` (Python FastAPI entry)
+- Web apps: `app.js` (Express.js), `server.js` (specific server, e.g., landing page)
+- UI: `index.html`, `style.css` (HTML + CSS styling)
+- Infrastructure: `*.tf` (Terraform files grouped by service: vpc.tf, ecs.tf, iam.tf)
+- Makefiles: `Makefile` (at component root: controller-python/Makefile, ui-nodejs/Makefile, terraform/Makefile)
+- Configuration: `*.json` (package.json for Node, infrastructure-outputs.json for Terraform)
+
+**Directories:**
+
+- Python: `controller-python/` (lowercase with dash)
+- Node.js: `ui-nodejs/` (lowercase with dash)
+- Component subfeatures: `workspace-landing/` (dash-separated, lowercase)
+- Infrastructure: `terraform/` (single-level, no nested service folders)
+- Specs: `specs/` (root-level documentation), `specs/adr/` (architecture decisions)
+- Planning: `.planning/codebase/` (dot-prefix for build artifacts)
+
+**Functions:**
+
+- Utility factories: `_load_infra()`, `_app_config()` (underscore prefix for private/internal)
+- Resource naming: `workspace_service_name()`, `workspace_task_family()`, `app_task_family()` (explicit naming functions)
+- AWS operations: `create_workspace_iam_role()`, `register_workspace_task_definition()`, `ensure_workspace_service()` (action verb + resource)
+- Waiters: `wait_for_task_running()`, `wait_for_task_ip()` (wait_for prefix)
+- Routes/API endpoints: `@app.get()`, `@app.post()` (FastAPI decorators)
+
+**Variables:**
+
+- Environment: `INFRA_OUTPUTS_PATH`, `AWS_DEFAULT_REGION`, `CLUSTER`, `REGION` (UPPER_SNAKE_CASE)
+- Constants: `ENVOY_PORT`, `LANDING_PAGE_PORT`, `APP_CONFIGS` (UPPER_SNAKE_CASE)
+- API/objects: `workspace_id`, `app_id`, `task_arn`, `tg_arn` (lower_snake_case)
+- HTTP routing: `/workspace{id}/{appId}/*` (URL path uses {camelCase} placeholders)
+
+**AWS Resources:**
+
+- ECS Service: `{workspaceId}` (workspace ID as service name)
+- Task definition family: `{workspaceId}-task` (workspace service), `{workspaceId}-{appId}-task` (app task)
+- IAM role: `{workspaceId}-app-role`
+- Target group: `{workspaceId}-tg` (max 32 chars; enforced via `[:32]` slice)
+- ALB path rule: `/workspace{id}/*` (numeric ID)
+- ALB listener rule: `/workspace{id}/*` → TG (single rule per workspace)
+- CloudWatch log stream: `{workspaceId}/{containerName}` (e.g., `ws-abc/landing-page`)
+
+## Where to Add New Code
+
+**New Feature (workspace-level or system-wide):**
+- Primary code: `controller-python/main.py` (add FastAPI endpoint + AWS logic)
+- UI integration: `ui-nodejs/index.html` (add form field or button) + `ui-nodejs/app.js` (add proxy route)
+- Infrastructure: `terraform/*.tf` (add new AWS resource if needed)
+- Documentation: Update `CLAUDE.md` API table if endpoint exposed
+
+**New App Type (streamlit, fastapi, reactjs, mkdocs, custom):**
+- App config mapping: `controller-python/main.py` lines 52-66 (add to `APP_CONFIGS` dict)
+- Dynamic command: `controller-python/main.py` lines 68-142 (add case in `_app_config()` function)
+- Testing: Manual test in UI bootstrap form with new `"type": "newtype"`
+- Documentation: Append to `CLAUDE.md` App Types table if public-facing
+
+**New Internal Route/API:**
+- Landing page API: `ui-nodejs/workspace-landing/server.js` (add `app.get()` or `app.post()`)
+- Controller proxy: `ui-nodejs/app.js` (add proxy route if UI-exposed) — else call direct from controller
+- Example: Envoy metrics endpoint would be added to landing page as `/internal/envoy-stats`
+
+**Utilities:**
+- Shared helpers: No shared utilities module; add to `controller-python/main.py` or `ui-nodejs/workspace-landing/server.js` as private functions
+- Reusable code: Extract to top-level functions in same file; no separate utils/ directory (keep flat structure)
+
+**Configuration:**
+- Environment variables: Reference in Dockerfile `ENV` or `entrypoint.sh`; document in `CLAUDE.md` AWS Environment section
+- Terraform variables: Add to `terraform/variables.tf`; add output to `terraform/outputs.tf` if controller needs it
+
+## Special Directories
+
+**infrastructure-outputs.json:**
+- Purpose: Terraform outputs (VPC ID, cluster name, security group, subnet IDs) loaded by controller at startup
+- Generated: Yes (by `make tf-output`)
+- Committed: No (in .gitignore; environment-specific)
+- Required: Yes (controller fails gracefully with warning if missing, but functionality limited)
+
+**.env / .env.* files:**
+- Purpose: Local development environment variables (AWS credentials, region overrides)
+- Generated: No (user-created)
+- Committed: No (in .gitignore)
+- Required: No (controller uses mounted ~/.aws credentials in Docker)
+
+**terraform/.terraform/:**
+- Purpose: Terraform state and module cache
+- Generated: Yes (by `make tf-init`)
+- Committed: No (in .gitignore)
+- Required: Yes (needed for tf plan/apply)
+
+**terraform/terraform.tfstate.d/:**
+- Purpose: Terraform workspaces directory (for different environments if needed)
+- Generated: Yes (auto-created by terraform)
+- Committed: No (in .gitignore)
+- Required: No (single workspace OK for development)
+
+**ui-nodejs/node_modules/:**
+- Purpose: NPM dependencies
+- Generated: Yes (by `npm install`)
+- Committed: No (in .gitignore)
+- Required: Yes (needed to run UI)
+
+**controller-python/__pycache__/:**
+- Purpose: Python bytecode cache
+- Generated: Yes (by Python interpreter)
+- Committed: No (in .gitignore)
+- Required: No (regenerated on run)
+
+---
+
+*Structure analysis: 2026-03-30*

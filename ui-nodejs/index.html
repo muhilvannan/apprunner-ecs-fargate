@@ -1,0 +1,548 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ECS App Tester</title>
+    <style>
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #0f1117;
+            color: #e2e8f0;
+            min-height: 100vh;
+            padding: 32px 24px;
+        }
+
+        header {
+            max-width: 900px;
+            margin: 0 auto 32px;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        header h1 {
+            font-size: 1.5rem;
+            font-weight: 600;
+            color: #f8fafc;
+            letter-spacing: -0.02em;
+        }
+
+        header .badge {
+            font-size: 0.7rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            background: #1e3a5f;
+            color: #60a5fa;
+            border: 1px solid #2563eb44;
+            padding: 3px 8px;
+            border-radius: 4px;
+        }
+
+        .grid {
+            max-width: 900px;
+            margin: 0 auto;
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 16px;
+        }
+
+        .card {
+            background: #161b27;
+            border: 1px solid #1e293b;
+            border-radius: 10px;
+            padding: 24px;
+        }
+
+        .card:first-child {
+            grid-column: 1 / -1;
+        }
+
+        .card-header {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 20px;
+        }
+
+        .card-icon {
+            width: 32px;
+            height: 32px;
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 15px;
+            flex-shrink: 0;
+        }
+
+        .icon-bootstrap { background: #1a2e44; }
+        .icon-control   { background: #1a2533; }
+        .icon-sync      { background: #1e1a2e; }
+
+        .card-header h2 {
+            font-size: 1rem;
+            font-weight: 600;
+            color: #f1f5f9;
+        }
+
+        .card-header p {
+            font-size: 0.75rem;
+            color: #64748b;
+            margin-top: 1px;
+        }
+
+        .form-row {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 12px;
+        }
+
+        .form-group {
+            margin-bottom: 14px;
+        }
+
+        .form-group.full { grid-column: 1 / -1; }
+
+        label {
+            display: block;
+            font-size: 0.75rem;
+            font-weight: 500;
+            color: #94a3b8;
+            margin-bottom: 5px;
+            letter-spacing: 0.02em;
+        }
+
+        label .optional {
+            color: #475569;
+            font-weight: 400;
+            margin-left: 4px;
+        }
+
+        input, textarea {
+            width: 100%;
+            background: #0f1117;
+            border: 1px solid #1e293b;
+            border-radius: 6px;
+            color: #e2e8f0;
+            font-size: 0.875rem;
+            padding: 8px 10px;
+            outline: none;
+            transition: border-color 0.15s;
+            font-family: inherit;
+        }
+
+        input::placeholder, textarea::placeholder {
+            color: #334155;
+        }
+
+        input:focus, textarea:focus {
+            border-color: #3b82f6;
+        }
+
+        textarea {
+            resize: vertical;
+            min-height: 72px;
+            font-family: 'SF Mono', 'Fira Code', monospace;
+            font-size: 0.8rem;
+        }
+
+        .btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 8px 16px;
+            border: none;
+            border-radius: 6px;
+            font-size: 0.85rem;
+            font-weight: 500;
+            cursor: pointer;
+            transition: opacity 0.15s, transform 0.1s;
+            font-family: inherit;
+        }
+
+        .btn:active { transform: scale(0.98); }
+        .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+        .btn-bootstrap { background: #2563eb; color: #fff; }
+        .btn-start     { background: #16a34a; color: #fff; }
+        .btn-stop      { background: #dc2626; color: #fff; }
+        .btn-sync      { background: #7c3aed; color: #fff; }
+
+        .btn:not(:disabled):hover { opacity: 0.88; }
+
+        .response-area {
+            margin-top: 14px;
+            background: #0a0d14;
+            border: 1px solid #1e293b;
+            border-radius: 6px;
+            padding: 12px;
+            font-family: 'SF Mono', 'Fira Code', monospace;
+            font-size: 0.75rem;
+            line-height: 1.6;
+            white-space: pre-wrap;
+            word-break: break-all;
+            min-height: 40px;
+            color: #94a3b8;
+            display: none;
+        }
+
+        .response-area.visible { display: block; }
+        .response-area.success { color: #4ade80; border-color: #14532d55; }
+        .response-area.error   { color: #f87171; border-color: #7f1d1d55; }
+        .response-area.loading { color: #60a5fa; }
+
+        .divider {
+            border: none;
+            border-top: 1px solid #1e293b;
+            margin: 20px 0 16px;
+        }
+
+        .apps-section { margin-bottom: 14px; }
+
+        .apps-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 8px;
+        }
+
+        .apps-header label { margin-bottom: 0; }
+
+        .btn-add-app {
+            background: none;
+            border: 1px dashed #334155;
+            color: #60a5fa;
+            border-radius: 5px;
+            padding: 3px 10px;
+            font-size: 0.75rem;
+            cursor: pointer;
+            font-family: inherit;
+            transition: border-color 0.15s, color 0.15s;
+        }
+
+        .btn-add-app:hover { border-color: #60a5fa; }
+
+        .app-row {
+            display: grid;
+            grid-template-columns: 1fr 160px 28px;
+            gap: 8px;
+            margin-bottom: 8px;
+            align-items: center;
+        }
+
+        .app-row select {
+            background: #0f1117;
+            border: 1px solid #1e293b;
+            border-radius: 6px;
+            color: #e2e8f0;
+            font-size: 0.875rem;
+            padding: 8px 10px;
+            outline: none;
+            font-family: inherit;
+            cursor: pointer;
+            transition: border-color 0.15s;
+        }
+
+        .app-row select:focus { border-color: #3b82f6; }
+
+        .btn-remove-app {
+            background: none;
+            border: 1px solid #1e293b;
+            color: #475569;
+            border-radius: 6px;
+            width: 28px;
+            height: 36px;
+            cursor: pointer;
+            font-size: 0.7rem;
+            transition: border-color 0.15s, color 0.15s;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .btn-remove-app:hover { border-color: #dc2626; color: #f87171; }
+
+        @media (max-width: 640px) {
+            .grid { grid-template-columns: 1fr; }
+            .card:first-child { grid-column: auto; }
+            .form-row { grid-template-columns: 1fr; }
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <h1>ECS App Tester</h1>
+        <span class="badge">Control Panel</span>
+    </header>
+
+    <div class="grid">
+
+        <!-- Bootstrap Workspace -->
+        <div class="card">
+            <div class="card-header">
+                <div class="card-icon icon-bootstrap">🚀</div>
+                <div>
+                    <h2>Bootstrap Workspace</h2>
+                    <p>Provision a new workspace and deploy infrastructure</p>
+                </div>
+            </div>
+            <form id="bootstrapForm">
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="workspaceId">Workspace ID</label>
+                        <input type="text" id="workspaceId" name="workspaceId" placeholder="e.g. ws-001" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="s3Bucket">S3 Bucket <span class="optional">(optional)</span></label>
+                        <input type="text" id="s3Bucket" name="s3Bucket" placeholder="my-bucket">
+                    </div>
+                </div>
+
+                <div class="apps-section">
+                    <div class="apps-header">
+                        <label>Apps</label>
+                        <button type="button" class="btn-add-app" onclick="addAppRow()">+ Add App</button>
+                    </div>
+                    <div id="appRows"></div>
+                </div>
+
+                <button type="submit" class="btn btn-bootstrap" style="margin-top:16px">Bootstrap Workspace</button>
+            </form>
+            <div id="bootstrapResponse" class="response-area"></div>
+        </div>
+
+        <!-- App Control (Start / Stop) -->
+        <div class="card" style="grid-column: 1 / -1;">
+            <div class="card-header">
+                <div class="card-icon icon-control">⚙</div>
+                <div>
+                    <h2>App Control</h2>
+                    <p>Start or stop apps within a workspace</p>
+                </div>
+            </div>
+            <div class="form-row" style="margin-bottom:14px;">
+                <div class="form-group" style="margin-bottom:0;">
+                    <label for="controlWorkspaceId">Workspace ID</label>
+                    <input type="text" id="controlWorkspaceId" placeholder="e.g. ws-001">
+                </div>
+                <div class="form-group" style="margin-bottom:0;display:flex;flex-direction:column;justify-content:flex-end;">
+                    <button type="button" class="btn btn-bootstrap" id="loadAppsBtn" onclick="loadApps()">Load Apps</button>
+                </div>
+            </div>
+            <div class="form-group">
+                <label for="appSelect">App</label>
+                <select id="appSelect" style="width:100%;background:#0f1117;border:1px solid #1e293b;border-radius:6px;color:#e2e8f0;font-size:0.875rem;padding:8px 10px;outline:none;font-family:inherit;cursor:pointer;">
+                    <option value="">— load apps first —</option>
+                </select>
+            </div>
+            <div style="display:flex;gap:10px;">
+                <button type="button" class="btn btn-start" onclick="controlApp('start')">▶ Start</button>
+                <button type="button" class="btn btn-stop"  onclick="controlApp('stop')">⏹ Stop</button>
+            </div>
+            <div id="controlResponse" class="response-area"></div>
+        </div>
+
+        <!-- Sync Files -->
+        <div class="card" style="grid-column: 1 / -1;">
+            <div class="card-header">
+                <div class="card-icon icon-sync">⇄</div>
+                <div>
+                    <h2>Sync App Files</h2>
+                    <p>Pull files from S3 into EFS for a workspace app</p>
+                </div>
+            </div>
+            <form id="syncForm">
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="syncWorkspaceId">Workspace ID</label>
+                        <input type="text" id="syncWorkspaceId" name="workspaceId" placeholder="e.g. ws-001" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="syncAppId">App ID</label>
+                        <input type="text" id="syncAppId" name="appId" placeholder="e.g. app-001" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="syncS3Bucket">S3 Bucket</label>
+                        <input type="text" id="syncS3Bucket" name="s3Bucket" placeholder="my-bucket" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="syncS3Prefix">S3 Prefix <span class="optional">(optional)</span></label>
+                        <input type="text" id="syncS3Prefix" name="s3Prefix" placeholder="path/to/files/">
+                    </div>
+                </div>
+                <button type="submit" class="btn btn-sync">Sync Files</button>
+            </form>
+            <div id="syncResponse" class="response-area"></div>
+        </div>
+
+    </div>
+
+    <script>
+        const APP_TYPES = ['streamlit', 'fastapi', 'reactjs', 'mkdocs'];
+
+        function appTypeOptions() {
+            return APP_TYPES.map(t => `<option value="${t}">${t}</option>`).join('');
+        }
+
+        function addAppRow() {
+            const row = document.createElement('div');
+            row.className = 'app-row';
+            row.innerHTML = `
+                <input type="text" class="app-name" placeholder="App name (e.g. app1)">
+                <select class="app-type">${appTypeOptions()}</select>
+                <button type="button" class="btn-remove-app" onclick="removeAppRow(this)" title="Remove">✕</button>
+            `;
+            document.getElementById('appRows').appendChild(row);
+        }
+
+        // Seed first row on page load
+        addAppRow();
+
+        function removeAppRow(btn) {
+            const rows = document.querySelectorAll('#appRows .app-row');
+            if (rows.length > 1) btn.closest('.app-row').remove();
+        }
+
+        function collectApps() {
+            return Array.from(document.querySelectorAll('#appRows .app-row')).map(row => ({
+                name: row.querySelector('.app-name').value.trim(),
+                type: row.querySelector('.app-type').value
+            })).filter(a => a.name);
+        }
+
+        async function submitForm(formId, method, endpoint, responseId, buildData) {
+            const form = document.getElementById(formId);
+            const responseDiv = document.getElementById(responseId);
+
+            form.addEventListener('submit', async (e) => {
+                e.preventDefault();
+                const btn = form.querySelector('button[type="submit"]');
+                btn.disabled = true;
+                responseDiv.className = 'response-area visible loading';
+                responseDiv.textContent = 'Sending request…';
+
+                try {
+                    const data = buildData(form);
+                    const response = await fetch(endpoint, {
+                        method,
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(data)
+                    });
+                    const result = await response.json();
+                    responseDiv.className = `response-area visible ${response.ok ? 'success' : 'error'}`;
+                    responseDiv.textContent = JSON.stringify(result, null, 2);
+                } catch (error) {
+                    responseDiv.className = 'response-area visible error';
+                    responseDiv.textContent = `Error: ${error.message}`;
+                }
+
+                btn.disabled = false;
+            });
+        }
+
+        function simpleData(form) {
+            const data = {};
+            for (let [key, value] of new FormData(form).entries()) {
+                if (value) data[key] = value;
+            }
+            return data;
+        }
+
+        submitForm('bootstrapForm', 'POST', '/api/workspace/bootstrap', 'bootstrapResponse', (form) => {
+            const data = simpleData(form);
+            const apps = collectApps();
+            if (apps.length) data.apps = apps;
+            return data;
+        });
+
+        submitForm('syncForm', 'PUT', '/api/app/sync', 'syncResponse', simpleData);
+
+        async function loadApps() {
+            const workspaceId = document.getElementById('controlWorkspaceId').value.trim();
+            const responseDiv = document.getElementById('controlResponse');
+            const select = document.getElementById('appSelect');
+            const btn = document.getElementById('loadAppsBtn');
+
+            if (!workspaceId) {
+                responseDiv.className = 'response-area visible error';
+                responseDiv.textContent = 'Enter a Workspace ID first.';
+                return;
+            }
+
+            btn.disabled = true;
+            responseDiv.className = 'response-area visible loading';
+            responseDiv.textContent = 'Loading apps…';
+
+            try {
+                const response = await fetch(`/api/workspace/${encodeURIComponent(workspaceId)}/apps`);
+                const result = await response.json();
+
+                if (!response.ok) {
+                    responseDiv.className = 'response-area visible error';
+                    responseDiv.textContent = JSON.stringify(result, null, 2);
+                    return;
+                }
+
+                select.innerHTML = '';
+                if (!result.apps || result.apps.length === 0) {
+                    select.innerHTML = '<option value="">— no apps found —</option>';
+                    responseDiv.className = 'response-area visible error';
+                    responseDiv.textContent = `No apps found for workspace "${workspaceId}". Bootstrap the workspace first.`;
+                    return;
+                }
+
+                result.apps.forEach(app => {
+                    const opt = document.createElement('option');
+                    opt.value = app.appId;
+                    opt.textContent = `${app.appId}  [${app.status}]`;
+                    select.appendChild(opt);
+                });
+
+                responseDiv.className = 'response-area visible success';
+                responseDiv.textContent = `Loaded ${result.apps.length} app(s)`;
+            } catch (err) {
+                responseDiv.className = 'response-area visible error';
+                responseDiv.textContent = `Error: ${err.message}`;
+            } finally {
+                btn.disabled = false;
+            }
+        }
+
+        async function controlApp(action) {
+            const workspaceId = document.getElementById('controlWorkspaceId').value.trim();
+            const appId = document.getElementById('appSelect').value;
+            const responseDiv = document.getElementById('controlResponse');
+
+            if (!workspaceId || !appId) {
+                responseDiv.className = 'response-area visible error';
+                responseDiv.textContent = 'Select a workspace and load apps first.';
+                return;
+            }
+
+            responseDiv.className = 'response-area visible loading';
+            responseDiv.textContent = `Sending ${action} request…`;
+
+            try {
+                const response = await fetch(`/api/app/${action}`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ workspaceId, appId }),
+                });
+                const result = await response.json();
+                responseDiv.className = `response-area visible ${response.ok ? 'success' : 'error'}`;
+                responseDiv.textContent = JSON.stringify(result, null, 2);
+
+                // Refresh app list to reflect new status
+                if (response.ok) loadApps();
+            } catch (err) {
+                responseDiv.className = 'response-area visible error';
+                responseDiv.textContent = `Error: ${err.message}`;
+            }
+        }
+    </script>
+</body>
+</html>

@@ -1,0 +1,14 @@
+# Copy this file to terraform.tfvars and customize for your environment
+# Example configuration for ECS App Tester
+
+aws_region     = "us-east-1"
+environment    = "dev"
+vpc_cidr       = "10.0.0.0/16"
+availability_zones = [
+  "us-east-1a",
+  "us-east-1b"
+]
+container_log_retention_days = 30
+
+# Optional: ACM certificate ARN for HTTPS
+# ssl_certificate_arn = "arn:aws:acm:us-east-1:123456789012:certificate/12345678-1234-1234-1234-123456789012"

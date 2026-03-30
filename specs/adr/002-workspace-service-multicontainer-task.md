@@ -142,6 +142,176 @@ This branch answers:
 
 ---
 
+## Option C: Cloud Map + Landing Page Proxy (Research — Not Yet Implemented)
+
+**Status:** Under research — candidate to replace Envoy in experiment branch
+**Motivation:** Reduce operational complexity of Envoy config management + hot-reload
+
+### Why ADR-001's "CloudMap Not Used" Reasoning No Longer Applies
+
+[ADR-001](001-cloudmap-not-used.md) rejected Cloud Map because ALB target groups are a separate
+system — Cloud Map DNS does not propagate to ALB `register_targets`. That is still true.
+
+However, the experiment branch changes the routing topology. In the experiment, there is already
+an intermediate proxy (Envoy) sitting between the ALB and app tasks. Traffic never goes directly
+from ALB to an app task IP. This means:
+
+- The ALB rule only needs to know about the **workspace service** (one static target)
+- App task IPs are resolved **inside the cluster** by the proxy
+- Cloud Map is designed exactly for internal IP resolution — this is the right use case
+
+### Architecture
+
+```
+Browser
+  │
+  ▼
+ALB  /workspace{id}/*  ──►  TG: {workspaceId}-tg  ──►  Landing Page :3001
+                                                              │
+                                    ┌─────────────────────────┤
+                                    │  /workspace{id}         │──► serves index.html (workspace hub)
+                                    │  /workspace{id}/{appId} │──► proxy → Cloud Map resolve → appIP:port
+                                    └─────────────────────────┘
+
+Cloud Map namespace: workspace-discovery.local
+  ├── {workspaceId}-app1  A  10.0.10.x  port 8501  (auto-deregisters on task stop)
+  └── {workspaceId}-app2  A  10.0.11.x  port 8000
+
+Workspace Task (service-managed, 1 container — NO Envoy):
+  └── Container: landing-page  :3001
+        ├── GET /workspace{id}           → serves index.html
+        ├── ANY /workspace{id}/{appId}/* → http-proxy-middleware → Cloud Map lookup → forward
+        └── GET /internal/routes         → query Cloud Map API → return live app list
+
+App Tasks (run_task — unchanged):
+  ├── Task: {workspaceId}-{appId}   IAM role: {workspaceId}-app-role
+  └── Task: {workspaceId}-{appId2}  IAM role: {workspaceId}-app-role
+```
+
+### How Cloud Map Registration Works With `run_task`
+
+ECS Service Discovery auto-registration only applies to ECS **services**. For `run_task`,
+registration must be done manually by the controller via the SDK:
+
+```python
+# After wait_for_task_ip(app_task_arn):
+servicediscovery.register_instance(
+    ServiceId=cloudmap_service_id,          # pre-created per app type, or per workspace
+    InstanceId=app_task_arn,
+    Attributes={
+        "AWS_INSTANCE_IPV4": task_ip,
+        "AWS_INSTANCE_PORT": str(app_port),
+    }
+)
+
+# On app stop:
+servicediscovery.deregister_instance(ServiceId=..., InstanceId=app_task_arn)
+```
+
+Cloud Map also supports health checks that auto-deregister unhealthy instances — providing
+a safety net if a task crashes without the controller calling `deregister_instance`.
+
+### Landing Page as Node.js Proxy
+
+Replace `http-proxy-middleware` for routing instead of Envoy:
+
+```js
+// server.js
+const { createProxyMiddleware } = require('http-proxy-middleware');
+const { ServiceDiscovery } = require('@aws-sdk/client-servicediscovery');
+
+// On request: /workspace{id}/{appId}/{rest}
+app.use('/workspace:wsId/:appId', async (req, res, next) => {
+  const instance = await resolveCloudMap(req.params.wsId, req.params.appId);
+  if (!instance) return res.status(503).json({ error: 'App not running' });
+
+  createProxyMiddleware({
+    target: `http://${instance.ip}:${instance.port}`,
+    changeOrigin: true,
+    pathRewrite: { [`^/workspace${req.params.wsId}/${req.params.appId}`]: '' },
+  })(req, res, next);
+});
+```
+
+No config file. No SIGHUP. No shared volume. Route state lives in Cloud Map (AWS-managed).
+
+### What Changes vs Current Envoy Experiment
+
+| Component | Envoy experiment | Cloud Map + proxy |
+|---|---|---|
+| Workspace task containers | 2 (landing-page + envoy) | **1 (landing-page only)** |
+| emptyDir shared volume | Required (envoy.yaml) | **Removed** |
+| Route update mechanism | Rewrite envoy.yaml + SIGHUP | **Cloud Map register/deregister** |
+| Controller calls on app start | `run_task` + `POST /internal/routes/add` | `run_task` + `register_instance` |
+| Controller calls on app stop | `POST /internal/routes/remove` + `stop_task` | `deregister_instance` + `stop_task` |
+| Auto-recovery on task crash | No (stale Envoy route) | **Yes (Cloud Map health check)** |
+| L7 features (retries, circuit breaking) | Yes (Envoy full feature set) | No (basic Node.js proxy) |
+| Fargate cost | 2 containers per workspace | **1 container per workspace** |
+| `terraform/cloudmap.tf` changes | Namespace only | **Add `aws_service_discovery_service` per workspace** |
+
+### Terraform Changes Required
+
+The `workspace-discovery.local` namespace is already provisioned in `cloudmap.tf`. Additional
+resources needed at workspace bootstrap time (created dynamically by controller, not Terraform):
+
+```python
+# Controller creates a Cloud Map service per workspace at bootstrap:
+servicediscovery.create_service(
+    Name=f"{workspace_id}-apps",
+    NamespaceId=cloudmap_namespace_id,
+    DnsConfig={
+        "DnsRecords": [{"Type": "A", "TTL": 10}]  # Low TTL for fast updates
+    },
+    HealthCheckCustomConfig={"FailureThreshold": 1}
+)
+```
+
+No new Terraform resources needed beyond what already exists.
+
+### Pros
+
+- **50% fewer containers per workspace task** — single landing-page container vs landing-page + Envoy
+- **No Envoy config management** — no envoy.yaml, no config templates, no hot-reload
+- **No SIGHUP / Admin API calls** — route changes are Cloud Map API calls (same as current `register_targets`)
+- **Auto-deregistration on task crash** — Cloud Map health checks remove unhealthy instances automatically
+- **Simpler landing page code** — http-proxy-middleware vs Envoy config rewrite logic
+- **AWS-native state** — routing state visible in Cloud Map console, not inside a container
+- **Lower Fargate cost** — 1 task unit vs 2 per workspace service
+
+### Cons
+
+- **DNS TTL lag** — even at TTL=10s, DNS-based resolution has a brief stale window after app stop
+  (mitigated by querying Cloud Map API directly instead of DNS — returns live state immediately)
+- **Node.js proxy limitations** — no built-in circuit breaking or retries vs Envoy's full L7 feature set
+  (acceptable for experiment scope — these features are not required)
+- **Still manual registration** — `run_task` doesn't auto-register in Cloud Map; controller must call
+  `register_instance` (same operational surface as the current Envoy route-add call)
+- **SDK dependency** — landing page must include `@aws-sdk/client-servicediscovery` and have IAM
+  permission to call `servicediscovery:DiscoverInstances` (minor — already needs AWS access)
+- **Cloud Map API latency** — `DiscoverInstances` adds ~10–50 ms per proxy request vs in-memory route table
+  (mitigated with a short TTL in-memory cache in the landing page, invalidated on each register/deregister)
+
+---
+
+## Recommendation
+
+**For the experiment branch: replace Envoy with Cloud Map + landing page proxy.**
+
+Rationale:
+
+1. The primary complexity driver is Envoy — config templating, hot-reload, Admin API, emptyDir volume,
+   and the `/internal/routes/add|remove` API layer. Removing Envoy removes all of this.
+2. The landing page is a core requirement regardless. Making it the proxy adds ~20 lines of
+   Node.js (`http-proxy-middleware`) vs the full Envoy config management layer it currently implements.
+3. Cloud Map is already provisioned (`terraform/cloudmap.tf`). The namespace `workspace-discovery.local`
+   exists in the experiment stack. Cost is negligible ($1/million queries).
+4. The L7 features Envoy provides (retries, circuit breaking) are not required for this experiment.
+5. Auto-deregistration on crash is a safety property the Envoy approach lacks.
+
+The Envoy approach remains valid if L7 features become a hard requirement in a future phase.
+
+---
+
 ## Future: Per-App Service (If Console Visibility Required)
 
 If both independent task lifecycle AND ECS console visibility are needed, the correct model is
@@ -151,4 +321,4 @@ workspace = N services and requires an explicit decision.
 
 ---
 
-_See also: [ADR-001](001-cloudmap-not-used.md) — CloudMap not used_
+_See also: [ADR-001](001-cloudmap-not-used.md) — CloudMap not used (original multi-container model)_

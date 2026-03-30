@@ -102,43 +102,47 @@ This branch answers:
 
 ---
 
-## Comparison
+## Comparison — All Three Options
 
-| Concern | main (multi-container) | experiment (per-app run_task + Envoy) |
-|---|---|---|
-| **App crash isolation** | No — one crash can destabilize sibling containers | Yes — each task is independent |
-| **Per-app CPU/memory** | No — shared task resources | Yes — set per task definition |
-| **ECS console visibility** | Workspace as 1 service (all apps grouped) | Apps as standalone tasks (not under service) |
-| **Start/stop mechanism** | ALB rule toggle (instant, no task restart) | Envoy route toggle + task run/stop |
-| **Start latency** | ~0s (container always running) | ~90s (task cold start on first start) |
-| **Bootstrap latency** | ~2 min (1 task wait) | ~2–5 min (N task waits, sequential) |
-| **ALB rules** | N rules per workspace (1 per app) | 1 rule per workspace |
-| **ENIs** | 1 per workspace | 1 (workspace service) + N (app tasks) |
-| **Fargate cost** | 1 task always running | 1 workspace task + N app tasks |
-| **Routing complexity** | ALB path rules (AWS-managed) | Envoy config (self-managed) |
-| **Workspace IAM** | Shared task role | Per-workspace role, app-scoped |
-| **Landing page / hub UI** | None | Yes — iframe embeds, status, metadata |
-| **L7 features** | None (ALB basic path routing) | Full Envoy: retries, timeouts, circuit breaking |
+| Concern | **Option A** — main (multi-container) | **Option B** — Envoy experiment | **Option C** — Cloud Map + Node.js proxy |
+|---|---|---|---|
+| **App crash isolation** | No — crash destabilizes siblings | Yes — each task independent | Yes — each task independent |
+| **Per-app CPU/memory** | No — shared task resources | Yes — set per task definition | Yes — set per task definition |
+| **ECS console visibility** | Workspace as 1 service (all apps grouped) | Apps as standalone tasks (not under service) | Apps as standalone tasks (not under service) |
+| **Start/stop mechanism** | ALB rule toggle (instant, no restart) | Envoy route toggle + task run/stop | Cloud Map register/deregister + task run/stop |
+| **Start latency** | ~0s (container always running) | ~90s (task cold start) | ~90s (task cold start) |
+| **Bootstrap latency** | ~2 min (1 task wait) | ~2–5 min (N task waits, sequential) | ~2–5 min (N task waits, sequential) |
+| **ALB rules** | N rules per workspace (1 per app) | 1 rule per workspace | 1 rule per workspace |
+| **ENIs** | 1 per workspace | 1 (workspace) + N (app tasks) | 1 (workspace) + N (app tasks) |
+| **Workspace containers** | N (1 per app) | 2 (landing-page + Envoy) | **1 (landing-page only)** |
+| **Fargate cost** | 1 task (N containers) | 1 workspace task + N app tasks | 1 workspace task + N app tasks |
+| **Routing mechanism** | ALB path rules (AWS-managed) | Envoy config file + SIGHUP (self-managed) | **Cloud Map API (AWS-managed state)** |
+| **Route update on app start** | ALB rule enable | Rewrite envoy.yaml + SIGHUP + POST /routes/add | `register_instance` API call |
+| **Route update on app stop** | ALB rule disable | Rewrite envoy.yaml + SIGHUP + POST /routes/remove | `deregister_instance` API call |
+| **Auto-recovery on task crash** | N/A (containers restart per ECS policy) | No — stale Envoy route persists | **Yes — Cloud Map health check deregisters** |
+| **Shared volume required** | No | Yes (emptyDir for envoy.yaml) | **No** |
+| **Workspace IAM** | Shared task role | Per-workspace role, app-scoped | Per-workspace role, app-scoped |
+| **Landing page / hub UI** | None | Yes — iframe embeds, status, Envoy config API | **Yes — iframe embeds, status, Cloud Map API** |
+| **L7 features** | None (ALB basic path routing) | Full Envoy: retries, timeouts, circuit breaking | Basic Node.js proxy (no circuit breaking) |
+| **Routing state location** | AWS ALB (rule enable/disable) | Inside container (envoy.yaml on emptyDir) | **AWS Cloud Map (external, visible in console)** |
+| **Operational surface area** | Low | High (Envoy config, SIGHUP, shared volume) | **Low** |
+| **Status** | Production (main branch) | Superseded by Option C | **Active experiment** |
 
-### Pros of Experiment
+### Pros of Option B (Envoy experiment) — now superseded by Option C
 
-- Independent app lifecycle — restart/stop one without touching others
+- Independent app lifecycle and crash isolation
 - Independent resource allocation per app
-- App crash is fully isolated
-- Envoy enables advanced L7 routing (headers, retries, traffic shaping)
-- Landing page is a richer workspace UX than raw ALB routing
-- Simpler per-app task definitions (single container)
+- Landing page hub UX
+- Envoy L7 features available if needed
 - Strong per-workspace IAM boundary at AWS level
 
-### Cons of Experiment
+### Cons of Option B — motivate Option C
 
 - `run_task` tasks not visible under workspace service in ECS console
-- Higher Fargate cost (N active tasks vs 1)
-- More ENIs → more subnet IP consumption
-- Slower bootstrap (N sequential task waits)
-- Envoy config management adds operational surface area
-- Landing page must implement Envoy config rewrite + hot-reload logic
-- More AWS resources per workspace (IAM role, task per app)
+- Envoy config management: envoy.yaml templating, SIGHUP, shared emptyDir volume, `/internal/routes/*` API
+- Stale Envoy route if app task crashes (no auto-deregistration)
+- Concurrent route updates cause race conditions (file write + SIGHUP)
+- 2 containers per workspace task vs 1 (extra Fargate cost)
 
 ---
 

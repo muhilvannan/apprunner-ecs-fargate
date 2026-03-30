@@ -18,7 +18,7 @@ api-stop:
 api-clean:
 	cd controller-python && make clean
 
-# Terraform targets
+# Terraform targets — always prints active workspace before plan/apply/destroy
 tf-init:
 	cd terraform && make init
 
@@ -40,6 +40,23 @@ tf-output:
 tf-clean:
 	cd terraform && make clean
 
+tf-workspace:
+	cd terraform && terraform workspace list
+
+# Experiment branch (task-level-app-experiments) — isolated state
+tf-experiment:
+	cd terraform && make experiment
+
+tf-experiment-apply:
+	cd terraform && make experiment-apply
+
+tf-experiment-destroy:
+	cd terraform && make experiment-destroy
+
+# Prod stack (main branch — brewer.muhilvannan.com)
+tf-prod:
+	cd terraform && make prod
+
 # UI targets
 ui-install:
 	cd ui-nodejs && make install
@@ -55,7 +72,7 @@ clean: api-clean tf-clean
 
 # AWS runtime cleanup — stops all workspace tasks/services, removes target groups and listener rules
 # Does NOT touch base infrastructure (VPC, ECS cluster, ALB, IAM, EFS)
-CLUSTER    ?= ecs-app-tester-dev
+CLUSTER    ?= ecs-app-tester-exp-dev
 AWS_REGION ?= eu-west-1
 
 cleanup-aws:

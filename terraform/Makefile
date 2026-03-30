@@ -1,6 +1,14 @@
 # Makefile for Terraform
 
-.PHONY: init plan apply destroy validate fmt clean output
+.PHONY: init plan apply destroy validate fmt clean output \
+        workspace-list workspace-select workspace-new workspace-delete \
+        dev staging prod experiment
+
+# ---------------------------------------------------------------------------
+# Current workspace guard — prints active workspace before destructive ops
+# ---------------------------------------------------------------------------
+_check-workspace:
+	@echo "[terraform] Active workspace: $$(terraform workspace show)"
 
 # Initialize Terraform
 init:
@@ -14,63 +22,80 @@ validate:
 fmt:
 	terraform fmt -recursive
 
-# Plan changes
-plan:
+# Plan changes — shows active workspace so you always know which stack
+plan: _check-workspace
 	terraform plan -var-file=terraform.tfvars
 
-# Apply changes
-apply:
+# Apply changes — shows active workspace, requires confirmation unless WS is explicit
+apply: _check-workspace
 	terraform apply -var-file=terraform.tfvars -auto-approve
 
-# Destroy resources
-destroy:
+# Destroy resources — shows active workspace
+destroy: _check-workspace
 	terraform destroy -var-file=terraform.tfvars -auto-approve
 
 # Show outputs
 output:
-	terraform output
+	terraform output -json > ../infrastructure-outputs.json
+	@echo "[terraform] Outputs written to ../infrastructure-outputs.json"
+	@terraform output
 
-# Clean up
+# Clean up local state (does NOT destroy AWS resources)
 clean:
 	rm -f terraform.tfstate* .terraform.lock.hcl
 	rm -rf .terraform
 
-# Plan with workspace vars (if exists)
-plan-workspace:
-	terraform plan -var-file=workspace.tfvars
-
-# Apply with workspace vars
-apply-workspace:
-	terraform apply -var-file=workspace.tfvars -auto-approve
-
+# ---------------------------------------------------------------------------
 # Workspace management
-.PHONY: workspace-list workspace-select workspace-new workspace-delete dev staging prod
+# ---------------------------------------------------------------------------
 
-# List workspaces
 workspace-list:
 	terraform workspace list
 
-# Select workspace
 workspace-select:
 	@echo "Available workspaces:" && terraform workspace list
 	@read -p "Enter workspace name: " ws && terraform workspace select $$ws
 
-# Create new workspace
 workspace-new:
-	@echo "Available workspaces:" && terraform workspace list
 	@read -p "Enter new workspace name: " ws && terraform workspace new $$ws
 
-# Delete workspace
 workspace-delete:
 	@echo "Available workspaces:" && terraform workspace list
 	@read -p "Enter workspace to delete: " ws && terraform workspace delete $$ws
 
-# Environment shortcuts
+# ---------------------------------------------------------------------------
+# Named workspace shortcuts — select (or create) then plan/apply
+# ---------------------------------------------------------------------------
+
 dev:
 	terraform workspace select dev 2>/dev/null || terraform workspace new dev
+	@echo "[terraform] Switched to workspace: dev"
 
 staging:
 	terraform workspace select staging 2>/dev/null || terraform workspace new staging
+	@echo "[terraform] Switched to workspace: staging"
 
 prod:
 	terraform workspace select prod 2>/dev/null || terraform workspace new prod
+	@echo "[terraform] Switched to workspace: prod"
+
+# Experiment workspace — isolated stack for task-level-app-experiments branch
+experiment:
+	terraform workspace select experiment 2>/dev/null || terraform workspace new experiment
+	@echo "[terraform] Switched to workspace: experiment (builder.muhilvannan.com / ecs-app-tester-exp-dev)"
+
+# ---------------------------------------------------------------------------
+# Compound targets — select workspace then act (safe, explicit)
+# ---------------------------------------------------------------------------
+
+# Deploy experiment stack from scratch
+experiment-apply: experiment plan apply output
+	@echo "[terraform] Experiment stack deployed in workspace: experiment"
+
+# Tear down only the experiment stack
+experiment-destroy: experiment destroy
+	@echo "[terraform] Experiment stack destroyed"
+
+# Prod stack shortcuts (brewer.muhilvannan.com)
+prod-apply: prod plan apply output
+prod-destroy: prod destroy

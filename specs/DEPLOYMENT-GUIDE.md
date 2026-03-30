@@ -1,4 +1,6 @@
-# Phase 01 Deployment Quick Start
+# ECS App Tester — Deployment Guide
+
+v0.1 Alpha shipped. Both phases (Foundation + Controller API) are complete. This guide covers deploying the base infrastructure to a fresh AWS account.
 
 ## Prerequisites
 
@@ -6,12 +8,12 @@ Ensure you have:
 - Terraform 1.0+ installed: `terraform version`
 - AWS CLI: `aws --version`
 - AWS credentials configured: `aws configure`
-- Appropriate IAM permissions for ECS, EC2, EFS, ALB, CloudMap, IAM, CloudWatch
+- Appropriate IAM permissions for ECS, EC2, EFS, ALB, IAM, CloudWatch
 
 ## Step 1: Review Configuration
 
 ```bash
-cd /Users/muhil-work/Projects/ecs-app-tester/terraform
+cd /Users/muhil-work/Projects/apprunner-ecs-fargate/terraform
 
 # Verify terraform.tfvars has correct values (mostly defaults are fine)
 cat terraform.tfvars
@@ -19,10 +21,10 @@ cat terraform.tfvars
 
 Expected content:
 ```
-aws_region                   = "us-east-1"
+aws_region                   = "eu-west-1"
 environment                  = "dev"
 vpc_cidr                     = "10.0.0.0/16"
-availability_zones           = ["us-east-1a", "us-east-1b"]
+availability_zones           = ["eu-west-1a", "eu-west-1b"]
 container_log_retention_days = 30
 ```
 
@@ -58,7 +60,7 @@ Expected completion:
 Apply complete! Resources: 35 added, 0 changed, 0 destroyed.
 ```
 
-## Step 4: Export Outputs for Phase 02
+## Step 4: Export Outputs for Controller
 
 ```bash
 terraform output -json > ../infrastructure-outputs.json
@@ -67,7 +69,7 @@ terraform output -json > ../infrastructure-outputs.json
 cat ../infrastructure-outputs.json | jq 'keys'
 ```
 
-Keys should include: `alb_dns_name`, `cluster_arn`, `cloudmap_namespace_id`, `efs_id`, etc.
+Keys should include: `alb_dns_name`, `cluster_arn`, `cluster_name`, `efs_id`, `vpc_id`, etc.
 
 ## Step 5: Verify Deployment
 
@@ -155,14 +157,21 @@ When prompted: Type `yes`
    terraform output -json > ../infrastructure-outputs.json
    ```
 
-2. **Update inventory (for Phase 02 controller):**
-   - Controller API will read `infrastructure-outputs.json`
-   - Ensure JSON file is accessible to controller process
+2. **Start Controller & UI:**
+   ```bash
+   make api-rebuild && make api-run  # Start FastAPI controller
+   make ui-start                      # Start Express UI (port 3000)
+   ```
 
-3. **Next: Phase 02**
-   - Ready to start Controller API development
-   - API will bootstrap workspaces using ECS and CloudMap
-   - Phase 02 plan will be generated next
+3. **Access the UI:**
+   - Local: http://localhost:3000
+   - Live: https://brewer.muhilvannan.com (if domain configured)
+
+4. **Bootstrap a Workspace:**
+   - Enter workspace ID in UI
+   - Select app types (streamlit, fastapi, reactjs, mkdocs)
+   - Click "Bootstrap"
+   - Apps start in stopped state (call `/app/start` to enable)
 
 ---
 
@@ -202,6 +211,7 @@ terraform destroy -target=aws_lb.main
 
 ## Deployment Checklist
 
+**Phase 01: Infrastructure**
 - [ ] Terraform installed and validated: `terraform version`
 - [ ] AWS credentials configured: `aws sts get-caller-identity`
 - [ ] terraform.tfvars reviewed
@@ -213,7 +223,14 @@ terraform destroy -target=aws_lb.main
 - [ ] ECS cluster active: `aws ecs describe-clusters`
 - [ ] EFS file system available: `aws efs describe-file-systems`
 - [ ] ALB created: `aws elbv2 describe-load-balancers`
-- [ ] Ready for Phase 02 (Controller API development)
+
+**Phase 02: Controller & UI**
+- [ ] Controller Docker image built: `make api-build`
+- [ ] Controller running: `make api-run` (port 8000)
+- [ ] UI running: `make ui-start` (port 3000)
+- [ ] UI accessible: http://localhost:3000
+- [ ] Bootstrap a workspace via UI
+- [ ] Start an app and verify it's accessible
 
 ---
 

@@ -20,7 +20,7 @@
 - Languages: Python (controller), Node.js (UI proxy), HCL (Terraform)
 - Controller: ~520 LOC Python
 - Infrastructure: ~1,200 LOC Terraform (8 .tf files, 35 resources)
-- App types: streamlit, fastapi, dash, jupyter, custom
+- App types: streamlit, fastapi, reactjs, mkdocs, custom
 - Live URL: https://brewer.muhilvannan.com
 
 ### Known Gaps

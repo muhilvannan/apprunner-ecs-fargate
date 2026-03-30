@@ -1,257 +1,342 @@
-# Project Structure & Deliverables Summary
+# ECS App Tester
 
-## Project: ECS App Tester
-**Status:** Phase 01 (Foundation) ✅ COMPLETE  
-**Date:** 2026-03-28  
-**Owner:** User  
+A multi-workspace application management system on AWS ECS Fargate. Deploy multiple applications in isolated workspaces, control them via ALB-based start/stop (no cold-start), and scale them instantly.
+
+**Status:** v0.1 Alpha ✅ **Live:** https://brewer.muhilvannan.com
+
+---
+
+## What It Does
+
+- **One workspace = one ECS service** with a multi-container task (one container per app)
+- **Start/stop via ALB rule toggle** — no container cold-start, instant response
+- **Multiple app types:** Streamlit, FastAPI, React.js, mkDocs, or custom Python
+- **Always-running containers** on private subnets behind a public ALB
+- **S3 sync endpoints** for user app code and files
+- **Infrastructure as Code** — Terraform provisions all AWS resources
+
+```
+┌─────────────────────┐
+│  Browser (3000)     │
+│  brewer.muhilvannan │
+└──────────┬──────────┘
+           │ HTTP/HTTPS
+           ▼
+┌─────────────────────────────────┐
+│  Express UI (localhost:3000)     │  ← Node.js proxy
+│  ui-nodejs/app.js               │
+└──────────┬──────────────────────┘
+           │ JSON API (localhost:8000)
+           ▼
+┌─────────────────────────────────┐
+│  FastAPI Controller (port 8000)  │  ← Python + boto3
+│  controller-python/main.py       │
+└──────────┬──────────────────────┘
+           │ boto3 AWS SDK calls
+           ▼
+      AWS (eu-west-1)
+    ┌─────────────────┐
+    │  ECS Cluster    │
+    │  ALB (443/80)   │
+    │  VPC, EFS, IAM  │
+    └─────────────────┘
+```
+
+---
+
+## Architecture
+
+### Core Concept
+
+**One Service Per Workspace** (required for ECS console visibility):
+```
+ECS Service: {workspaceId}
+  ├─ desiredCount=1 (always running)
+  └─ Task: {workspaceId}-task
+       ├─ Container: app1  (port 8501 if streamlit)
+       ├─ Container: app2  (port 8000 if fastapi)
+       └─ Container: appN  (port varies)
+```
+
+**ALB Listener Rules** per app:
+```
+/workspace{id}/app1*  →  forward (running)  | fixed-response 503 (stopped)
+/workspace{id}/app2*  →  forward (running)  | fixed-response 503 (stopped)
+```
+
+**Start/Stop Logic**: Toggle the ALB rule action. Containers never stop — traffic is toggled.
+
+### Why This Architecture?
+
+- **AWS hard constraint:** Tasks launched via `run_task` never appear under a service in the console. Only the service scheduler's tasks are visible. So we use one service, one task, all apps as containers.
+- **No cold-start:** ALB rule toggle is instant. No `stop_task` / `start_task` delays.
+- **Multi-app grouping:** All workspace apps visible together under one service in the AWS console.
+
+See [specs/adr/002-workspace-service-multicontainer-task.md](specs/adr/002-workspace-service-multicontainer-task.md) for the locked architectural decision.
+
+---
+
+## Components
+
+| Component | Path | Tech | Port | Purpose |
+|-----------|------|------|------|---------|
+| **Controller API** | `controller-python/` | Python 3.12 + FastAPI + boto3 | 8000 | AWS ECS/ALB/IAM management |
+| **Web UI** | `ui-nodejs/` | Node.js + Express | 3000 | Web interface, proxies to controller |
+| **Infrastructure** | `terraform/` | Terraform ~5.0 | — | VPC, ECS, ALB, IAM, EFS, Route53 |
+
+---
+
+## App Types Supported
+
+The controller dynamically configures containers for these app types:
+
+| Type | Port | Runtime | Notes |
+|------|------|---------|-------|
+| **streamlit** | 8501 | Python 3.12 + pip | `hello` demo app, `--server.baseUrlPath` for ALB routing |
+| **fastapi** | 8000 | Python 3.12 + pip + uvicorn | Minimal JSON API demo |
+| **reactjs** | 3000 | Python 3.12 + http.server | React CDN HTML served via Python |
+| **mkdocs** | 8001 | Python 3.12 + pip | MkDocs static site demo |
+| **custom** | 8080 | Python 3.12 | Sleep placeholder (extend as needed) |
+
+All images: `public.ecr.aws/docker/library/python:3.12-slim` (no Docker Hub auth required).
+
+---
+
+## API Endpoints
+
+All endpoints are proxied through the Express UI to the FastAPI controller:
+
+| Method | Path | Action |
+|--------|------|--------|
+| `POST` | `/workspace/bootstrap` | Register task def, create service, create TGs + ALB rules |
+| `GET` | `/workspace/{id}/apps` | List apps in running task + rule states |
+| `POST` | `/app/start` | Enable ALB rule (forward traffic) |
+| `POST` | `/app/stop` | Disable ALB rule (return 503) |
+| `PUT` | `/app/sync` | List S3 objects for syncing |
+| `GET` | `/health` | Health check + AWS caller identity |
+
+---
+
+## Quick Start
+
+### Prerequisites
+- AWS account with credentials configured (`aws configure`)
+- Terraform 1.0+
+- Docker (for local testing)
+- Make
+
+### 1. Deploy Infrastructure (Phase 01)
+
+```bash
+cd terraform
+terraform init
+terraform plan -var-file=terraform.tfvars
+terraform apply -var-file=terraform.tfvars
+terraform output -json > ../infrastructure-outputs.json
+```
+
+**Expected:** 35 AWS resources created in ~5 minutes
+
+### 2. Build & Run Controller (Phase 02)
+
+```bash
+make api-build        # Build controller Docker image
+make api-run          # Start controller (mounts ~/.aws + infrastructure-outputs.json)
+make ui-start         # Start UI (npm install if needed)
+```
+
+**Access:** http://localhost:3000
+
+### 3. Bootstrap a Workspace
+
+**Via UI:** Enter workspace ID, select app types, click "Bootstrap"
+
+**Via API:**
+```bash
+curl -X POST http://localhost:3000/api/workspace/bootstrap \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "workspaceId": "ws-001",
+    "apps": [
+      {"name": "demo", "type": "streamlit"}
+    ]
+  }'
+```
+
+### 4. Start an App
+
+```bash
+curl -X POST http://localhost:3000/api/app/start \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "workspaceId": "ws-001",
+    "appId": "demo"
+  }'
+```
+
+Visit: https://brewer.muhilvannan.com/workspace-001/demo
+
+---
+
+## Make Commands
+
+### Controller
+```bash
+make api-build        # docker build controller
+make api-run          # docker run (mounts ~/.aws + infra outputs)
+make api-rebuild      # stop + build + run
+make api-stop         # docker stop
+make api-logs         # docker logs -f
+make api-clean        # remove image
+```
+
+### UI
+```bash
+make ui-install       # npm install
+make ui-start         # node app.js (port 3000)
+```
+
+### Infrastructure
+```bash
+make tf-init          # terraform init
+make tf-plan          # terraform plan
+make tf-apply         # terraform apply
+make tf-output        # terraform output → infrastructure-outputs.json
+make tf-destroy       # tear down all AWS resources
+make cleanup-aws      # stop all tasks, delete TGs/rules
+```
 
 ---
 
 ## Directory Structure
 
 ```
-/Users/muhil-work/Projects/ecs-app-tester/
-├── terraform/                              # Terraform infrastructure code
-│   ├── main.tf                            # Provider & locals
-│   ├── variables.tf                       # Input variables
-│   ├── vpc.tf                             # VPC (10.0.0.0/16, 2 pub/2 priv subnets)
-│   ├── ecs.tf                             # ECS cluster + CloudWatch
-│   ├── cloudmap.tf                        # Service discovery namespace
-│   ├── iam.tf                             # IAM roles (execution + workspace task)
-│   ├── efs.tf                             # EFS file system + mount targets
-│   ├── alb.tf                             # ALB + target groups + listeners
-│   ├── outputs.tf                         # 30+ output variables
-│   ├── terraform.tfvars                   # Configuration (dev defaults)
-│   ├── terraform.tfvars.example           # Example for other environments
-│   ├── .gitignore                         # State/credentials protection
-│   ├── .terraform.lock.hcl                # Reproducible provider versions
-│   └── .terraform/                        # Provider plugins (auto-generated)
-│
-└── .planning/                              # Project planning & docs
-    ├── PROJECT.md                         # Vision & architecture
-    ├── ROADMAP.md                         # 4-phase roadmap (01-04)
-    ├── STATE.md                           # Current state & decisions
-    ├── DEPLOYMENT-GUIDE.md                # Step-by-step AWS deployment
-    │
-    └── phases/01-foundation/
-        ├── 01-01-PLAN.md                  # Wave 1 plan (VPC, ECS, CloudMap, IAM)
-        ├── 01-01-SUMMARY.md               # Wave 1 execution summary
-        ├── 01-02-PLAN.md                  # Wave 2 plan (EFS, ALB)
-        ├── 01-02-SUMMARY.md               # Wave 2 execution summary
-        └── EXECUTION-COMPLETE.md          # Overall Phase 01 completion
+apprunner-ecs-fargate/
+├── controller-python/         # FastAPI controller
+│   ├── main.py               # All AWS logic (boto3)
+│   ├── Dockerfile            # Python 3.12-slim
+│   ├── requirements.txt       # Dependencies
+│   └── Makefile              # docker build/run
+├── ui-nodejs/                # Express web UI
+│   ├── app.js                # Routes + proxies
+│   ├── index.html            # Dark theme frontend
+│   ├── package.json          # Dependencies
+│   └── Makefile              # npm install/start
+├── terraform/                # AWS infrastructure
+│   ├── main.tf               # Provider config
+│   ├── vpc.tf                # VPC, subnets, NAT, IGW
+│   ├── ecs.tf                # ECS cluster, CloudWatch
+│   ├── alb.tf                # ALB, target groups, listeners
+│   ├── iam.tf                # IAM roles & policies
+│   ├── efs.tf                # EFS file system
+│   ├── variables.tf          # Input variables
+│   ├── outputs.tf            # Output variables
+│   └── terraform.tfvars      # Dev configuration
+├── specs/                    # Documentation
+│   ├── PROJECT.md            # Vision & architecture
+│   ├── ROADMAP.md            # Release timeline
+│   ├── MILESTONES.md         # v0.1 Alpha details
+│   ├── STATE.md              # Current status & decisions
+│   ├── adr/                  # Architecture Decision Records
+│   └── milestones/           # Historical milestones
+├── infrastructure-outputs.json # Terraform outputs (auto-gen)
+├── CLAUDE.md                 # Dev instructions (you are here)
+└── README.md                 # This file
 ```
 
 ---
 
-## What's Been Delivered
+## AWS Environment
 
-### Phase 01: Foundation Infrastructure
-
-**✅ COMPLETE** — All Terraform code written, validated, ready for AWS deployment
-
-**Planning Documents (9 files):**
-1. `.planning/PROJECT.md` — Vision, architecture diagram, success criteria
-2. `.planning/ROADMAP.md` — 4-phase roadmap (01-foundation, 02-controller, 03-integration, 04-testing)
-3. `.planning/STATE.md` — Project state, locked architectural decisions
-4. `.planning/DEPLOYMENT-GUIDE.md` — Step-by-step AWS deployment instructions
-5. `.planning/phases/01-foundation/01-01-PLAN.md` — Wave 1 detailed plan (VPC, networking, ECS, CloudMap, IAM)
-6. `.planning/phases/01-foundation/01-01-SUMMARY.md` — Wave 1 execution summary
-7. `.planning/phases/01-foundation/01-02-PLAN.md` — Wave 2 detailed plan (EFS, ALB)
-8. `.planning/phases/01-foundation/01-02-SUMMARY.md` — Wave 2 execution summary
-9. `.planning/phases/01-foundation/EXECUTION-COMPLETE.md` — Overall Phase 01 completion checkpoint
-
-**Infrastructure Code (8 files, ~1,200 lines):**
-1. `terraform/main.tf` — AWS provider, locals, required versions
-2. `terraform/variables.tf` — Input variables (region, environment, CIDR, AZs)
-3. `terraform/vpc.tf` — VPC with 2 pub/2 private subnets, IGW, NAT, route tables, SGs
-4. `terraform/ecs.tf` — ECS cluster, CloudWatch logging, capacity providers
-5. `terraform/cloudmap.tf` — CloudMap namespace (workspace-discovery.local)
-6. `terraform/iam.tf` — IAM roles (execution, workspace task), S3 policy template
-7. `terraform/efs.tf` — EFS with mount targets, access point, security group
-8. `terraform/alb.tf` — ALB, target group, HTTP/HTTPS listeners
-
-**Configuration Files (2 files):**
-1. `terraform/terraform.tfvars` — Dev environment configuration
-2. `terraform/terraform.tfvars.example` — Template for other environments
-
-**Support Files:**
-- `terraform/.gitignore` — Protect state files and credentials
-- `terraform/.terraform.lock.hcl` — Reproducible provider versions
+| Variable | Value |
+|----------|-------|
+| **Region** | `eu-west-1` |
+| **Environment** | `dev` |
+| **Cluster** | `ecs-app-tester-dev` |
+| **Domain** | `brewer.muhilvannan.com` |
+| **VPC CIDR** | `10.0.0.0/16` |
+| **Availability Zones** | `eu-west-1a`, `eu-west-1b` |
+| **Log Group** | `/ecs/app-tester` |
 
 ---
 
-## Infrastructure Summary
+## Naming Conventions
 
-**35 AWS Resources Defined:**
-
-| Category | Resource Type | Count | Details |
-|----------|---------------|-------|---------|
-| Networking | VPC | 1 | 10.0.0.0/16 |
-| | Public Subnets | 2 | /24, across 2 AZs |
-| | Private Subnets | 2 | /24, across 2 AZs |
-| | Internet Gateway | 1 | Attached to VPC |
-| | NAT Gateways | 2 | One per AZ for HA |
-| | Route Tables | 3 | 1 public, 2 private |
-| | Security Groups | 3 | ALB, ECS, EFS |
-| Compute | ECS Cluster | 1 | Fargate, Container Insights |
-| | Capacity Providers | 2 | FARGATE, FARGATE_SPOT |
-| Storage | EFS File System | 1 | Encrypted, bursting |
-| | EFS Mount Targets | 2 | Multi-AZ HA |
-| | EFS Access Point | 1 | POSIX enforcement |
-| Load Balancing | ALB | 1 | Public, multi-AZ |
-| | Target Group | 1 | HTTP, health checks |
-| | Listener HTTP | 1 | Port 80 |
-| | Listener HTTPS | 0-1 | Optional (SSL cert) |
-| Observability | CloudWatch Log Group | 1 | /ecs/app-tester, 30-day |
-| Service Discovery | CloudMap Namespace | 1 | workspace-discovery.local |
-| Security | IAM Execution Role | 1 | Task execution permissions |
-| | IAM Task Role | 1 | Workspace-scoped (customizable) |
+```
+ECS service:      {workspaceId}
+Task def family:  {workspaceId}-task
+Container name:   {appId}
+Target group:     {workspaceId}-{appId}-tg  (max 32 chars)
+ALB path:         /workspace{workspaceId}/{appId}*
+App URL:          https://brewer.muhilvannan.com/workspace{workspaceId}/{appId}
+```
 
 ---
 
-## Architectural Decisions (Locked)
+## Key Architectural Decisions
 
-| Item | Decision | Rationale |
-|------|----------|-----------|
-| **Service Discovery** | CloudMap (service-level) | Cleaner namespace, workspace isolation |
-| **ALB Routing** | Direct ECS task IPs + CloudMap | Lower latency, simpler architecture |
-| **EFS Storage** | Single mount (/mnt/efs) with OS scoping | Cost-effective, flexible permissions |
-| **IAM Pattern** | Inline S3 policies per workspace | Per-workspace bucket isolation |
-| **Controller** | Stateless (AWS source of truth) | Simpler reconciliation, no state drift |
+| Decision | Rationale | See Also |
+|----------|-----------|----------|
+| **Python/FastAPI over Node.js** | boto3 is canonical; simpler stack | — |
+| **Multi-container task** | Required for ECS console grouping | [ADR-002](specs/adr/002-workspace-service-multicontainer-task.md) |
+| **ALB rule toggle for start/stop** | No container cold-start | — |
+| **No CloudMap** | ALB target groups work without it | [ADR-001](specs/adr/001-cloudmap-not-used.md) |
+| **No `loadBalancers` on service** | Manual TG registration enables N apps per service | — |
 
 ---
 
-## Ready for AWS Deployment
+## Next Steps
 
-### Prerequisites Checklist
-- [x] All Terraform code written and validated
-- [x] terraform.tfvars configured (dev defaults)
-- [x] terraform validate ✅ (syntax correct)
-- [x] terraform plan ✅ (35 resources, no errors)
-- [ ] AWS credentials configured (before deploy)
-- [ ] AWS region verified (default: us-east-1)
+### Completed (v0.1)
+- ✅ Terraform base infrastructure provisioned
+- ✅ Controller API with boto3 AWS integration
+- ✅ Workspace bootstrap flow
+- ✅ App start/stop via ALB rules
+- ✅ Streamlit base URL path fix
+- ✅ Web UI for management
 
-### Deployment Command
+### Future Enhancements
+- [ ] EFS file mounting in task containers
+- [ ] S3 ↔ EFS sync implementation
+- [ ] Formal test suite
+- [ ] Pre-built app code templates
+- [ ] User authentication & RBAC
+- [ ] Cost tracking per workspace
+
+---
+
+## Documentation
+
+For deeper information:
+
+- **Architecture & Vision:** [specs/PROJECT.md](specs/PROJECT.md)
+- **Release Timeline:** [specs/ROADMAP.md](specs/ROADMAP.md)
+- **Current Status:** [specs/STATE.md](specs/STATE.md)
+- **v0.1 Details:** [specs/MILESTONES.md](specs/MILESTONES.md)
+- **Architecture Decisions:** [specs/adr/](specs/adr/)
+- **Developer Instructions:** [CLAUDE.md](CLAUDE.md)
+
+---
+
+## Development
+
+**Local setup** (see CLAUDE.md for detail):
+
 ```bash
-cd /Users/muhil-work/Projects/ecs-app-tester/terraform
-terraform apply -var-file=terraform.tfvars
-```
+# After changes to controller or UI code
+make api-rebuild && make api-run  # for controller changes
+make ui-start                      # for UI changes (hot reload)
 
-### After Deployment
-```bash
-# Export outputs for Phase 02
-terraform output -json > ../infrastructure-outputs.json
-
-# Verify resources created
-aws ecs describe-clusters --cluster-names ecs-app-tester-dev
-aws efs describe-file-systems | grep FileSystemId
-aws elbv2 describe-load-balancers | grep DNSName
+# After infra changes
+make tf-plan && make tf-apply && make tf-output
 ```
 
 ---
 
-## What's Next: Phase 02 (Controller API)
+## License
 
-**Planning Status:** ⏳ Awaiting Phase 01 AWS deployment completion
-
-**Phase 02 Scope:**
-- Node.js/Express controller API (runs locally in Docker)
-- AWS SDK integration (ECS, S3, CloudMap, IAM)
-- Workspace bootstrap endpoint: `POST /api/workspace` (creates ECS service + returns service ARN)
-- App lifecycle endpoints: `POST /api/app/start`, `POST /api/app/stop`
-- File sync endpoint: `PUT /api/app/sync` (S3 → EFS)
-
-**Dependencies:**
-- Phase 01 must be deployed to AWS (all resources created)
-- Controller must have AWS credentials and cluster identifiers
-
-**Timeline:** After Phase 01 deployment (5-10 min), Phase 02 planning can begin
+MIT License — see [LICENSE](LICENSE) file.
 
 ---
 
-## Phase Roadmap
-
-```
-Phase 01: Foundation (Current)
-├── Wave 1: terraform/main.tf, variables.tf, vpc.tf, ecs.tf, cloudmap.tf, iam.tf
-└── Wave 2: terraform/efs.tf, alb.tf, outputs.tf
-    ↓ (Deploy to AWS: terraform apply)
-    
-Phase 02: Controller API (Next)
-├── Wave 1: Node.js/Express scaffold, Docker setup, AWS SDK
-├── Wave 2: Workspace bootstrap (POST /api/workspace)
-└── Wave 3: App lifecycle + file sync (start, stop, sync)
-    ↓ (Deploy controller to Docker)
-    
-Phase 03: Integration (After Phase 02)
-├── ALB listener rules for pattern-based routing
-└── CloudMap service registration + validation
-    ↓ (Wire ALB → CloudMap → ECS tasks)
-    
-Phase 04: Testing (Final)
-├── Integration tests (workspace/app lifecycle)
-└── E2E tests (full workflows)
-    ↓ (Validate complete system)
-```
-
----
-
-## Key Files for Next Steps
-
-### For Deploying Phase 01
-- **Start here:** `.planning/DEPLOYMENT-GUIDE.md` (step-by-step AWS deployment)
-- **Reference:** `.planning/phases/01-foundation/EXECUTION-COMPLETE.md` (full summary)
-
-### For Planning Phase 02
-- **Architecture:** `.planning/PROJECT.md` (system overview)
-- **Requirements:** `.planning/ROADMAP.md` (Phase 02 requirements: API-01, API-02, API-03, API-04)
-- **Context:** `.planning/phases/01-foundation/EXECUTION-COMPLETE.md` (outputs from Phase 01)
-
-### For Understanding Infrastructure
-- **Overall:** `.planning/PROJECT.md` (vision + architecture diagram)
-- **Phase 01-01:** `.planning/phases/01-foundation/01-01-SUMMARY.md` (VPC, ECS, CloudMap, IAM)
-- **Phase 01-02:** `.planning/phases/01-foundation/01-02-SUMMARY.md` (EFS, ALB setup)
-
----
-
-## Documentation Root Map
-
-| Location | Purpose | Audience |
-|----------|---------|----------|
-| `.planning/PROJECT.md` | Vision, architecture, goals | Everyone |
-| `.planning/ROADMAP.md` | Phase breakdown, requirements, timeline | Product/Planning |
-| `.planning/STATE.md` | Current status, decisions, blockers | Developers |
-| `.planning/DEPLOYMENT-GUIDE.md` | AWS deployment steps | DevOps/Operators |
-| `.planning/phases/01-foundation/*.md` | Phase 01 details | Implementation |
-
----
-
-## Success Metrics
-
-**Phase 01 Complete When:**
-- [x] All Terraform files created and validated
-- [x] terraform plan shows 35 resources with no errors
-- [x] All outputs defined for Phase 02 integration
-- [x] Planning documentation complete (9 files)
-- [x] Deployment guide ready (step-by-step instructions)
-- [ ] (Next) Resources deployed to AWS (`terraform apply`)
-- [ ] (Next) infrastructure-outputs.json exported
-- [ ] (Next) Phase 02 planning begins
-
-**Current Status:** ✅ 6/8 complete (awaiting AWS deployment)
-
----
-
-## Quick Links
-
-**Deployment:** `/Users/muhil-work/Projects/ecs-app-tester/.planning/DEPLOYMENT-GUIDE.md`  
-**Architecture:** `/Users/muhil-work/Projects/ecs-app-tester/.planning/PROJECT.md`  
-**Roadmap:** `/Users/muhil-work/Projects/ecs-app-tester/.planning/ROADMAP.md`  
-**Terraform:** `/Users/muhil-work/Projects/ecs-app-tester/terraform/`  
-
----
-
-**Project Status:** Phase 01 Planning & Code Generation ✅ COMPLETE  
-**Next Action:** Deploy Phase 01 infrastructure to AWS OR start Phase 02 planning  
-
-Ready to proceed? 🚀
+**Project Status:** v0.1 Alpha shipped 2026-03-30. Live at https://brewer.muhilvannan.com

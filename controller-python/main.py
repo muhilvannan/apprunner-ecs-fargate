@@ -29,14 +29,15 @@ except Exception as e:
     log.warning("Could not load infra outputs: %s — set INFRA_OUTPUTS env var", e)
     INFRA = {}
 
-REGION          = os.environ.get("AWS_DEFAULT_REGION") or os.environ.get("AWS_REGION", "eu-west-1")
-CLUSTER         = INFRA.get("cluster_name", "ecs-app-tester-exp-dev")
-PRIVATE_SUBNETS = INFRA.get("private_subnet_ids", [])
-TASK_SG         = INFRA.get("ecs_task_security_group_id", "")
-EXEC_ROLE_ARN   = INFRA.get("ecs_task_execution_role_arn", "")
-LOG_GROUP       = INFRA.get("cloudwatch_log_group_name", "/ecs/app-tester")
-VPC_ID          = INFRA.get("vpc_id", "")
-DOMAIN          = "builder.muhilvannan.com"
+REGION                = os.environ.get("AWS_DEFAULT_REGION") or os.environ.get("AWS_REGION", "eu-west-1")
+CLUSTER               = INFRA.get("cluster_name", "ecs-app-tester-exp-dev")
+PRIVATE_SUBNETS       = INFRA.get("private_subnet_ids", [])
+TASK_SG               = INFRA.get("ecs_task_security_group_id", "")
+EXEC_ROLE_ARN         = INFRA.get("ecs_task_execution_role_arn", "")
+LOG_GROUP             = INFRA.get("cloudwatch_log_group_name", "/ecs/app-tester")
+VPC_ID                = INFRA.get("vpc_id", "")
+CLOUDMAP_NAMESPACE_ID = INFRA.get("cloudmap_namespace_id", "")
+DOMAIN                = "builder.muhilvannan.com"
 
 # Ports
 LANDING_PAGE_PORT  = 3001
@@ -137,9 +138,10 @@ def _app_config(app_type: str, workspace_id: str = "", app_id: str = ""):
 # ---------------------------------------------------------------------------
 # AWS clients
 # ---------------------------------------------------------------------------
-ecs   = boto3.client("ecs",   region_name=REGION)
-elbv2 = boto3.client("elbv2", region_name=REGION)
-iam   = boto3.client("iam",   region_name=REGION)
+ecs   = boto3.client("ecs",              region_name=REGION)
+elbv2 = boto3.client("elbv2",            region_name=REGION)
+iam   = boto3.client("iam",             region_name=REGION)
+sd    = boto3.client("servicediscovery", region_name=REGION)
 
 # ---------------------------------------------------------------------------
 # Models
@@ -172,6 +174,10 @@ def app_task_group(workspace_id: str) -> str:
 
 def workspace_tg_name(workspace_id: str) -> str:
     return f"{workspace_id}-tg"[:32]
+
+def cloudmap_service_name(workspace_id: str) -> str:
+    """Cloud Map service name for workspace app discovery."""
+    return f"{workspace_id}-apps"
 
 def workspace_iam_role_name(workspace_id: str) -> str:
     return f"{workspace_id}-app-role"

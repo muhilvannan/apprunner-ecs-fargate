@@ -82,20 +82,24 @@ app.use(`${BASE_PATH}/:appId`, async (req, res, next) => {
     return res.status(503).json({ error: 'Service discovery failed', appId });
   }
 
-  createProxyMiddleware({
-    target,
-    changeOrigin: true,
-    ws: true,
-    pathRewrite: { [`^${BASE_PATH}/${appId}`]: '' },
-    on: {
-      error: (proxyErr, _req, proxyRes) => {
-        console.error(`[proxy] Error forwarding ${appId}:`, proxyErr.message);
-        if (proxyRes && !proxyRes.headersSent) {
-          proxyRes.status(502).json({ error: 'Upstream error' });
-        }
+  const cacheKey = `${appId}:${target}`;
+  if (!proxyInstanceCache[cacheKey]) {
+    proxyInstanceCache[cacheKey] = createProxyMiddleware({
+      target,
+      changeOrigin: true,
+      ws: true,
+      pathRewrite: { [`^${BASE_PATH}/${appId}`]: '' },
+      on: {
+        error: (proxyErr, _req, proxyRes) => {
+          console.error(`[proxy] Error forwarding ${appId}:`, proxyErr.message);
+          if (proxyRes && !proxyRes.headersSent) {
+            proxyRes.status(502).json({ error: 'Upstream error' });
+          }
+        },
       },
-    },
-  })(req, res, next);
+    });
+  }
+  proxyInstanceCache[cacheKey](req, res, next);
 });
 
 // ---------------------------------------------------------------------------
@@ -154,33 +158,45 @@ function serveHub(res) {
 }
 
 // ---------------------------------------------------------------------------
-// Start — attach upgrade handler so WebSocket connections are proxied
+// Start
 // ---------------------------------------------------------------------------
 const server = app.listen(PORT, () => {
   console.log(`[landing-page] Workspace ${WORKSPACE_ID} hub listening on port ${PORT}`);
   console.log(`[landing-page] BASE_PATH=${BASE_PATH}  DOMAIN=${DOMAIN}`);
 });
 
-// WebSocket upgrade: resolve target from Cloud Map then proxy the upgrade
+// WebSocket upgrade handler — ALB passes TCP upgrade through to backend
 server.on('upgrade', async (req, socket, head) => {
   const url = req.url || '';
+  console.log(`[ws] upgrade request: ${url}`);
+
   const match = url.match(new RegExp(`^${BASE_PATH.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}/([^/]+)`));
   if (!match) { socket.destroy(); return; }
   const appId = match[1];
+  if (appId === 'internal') { socket.destroy(); return; }
 
   try {
     const resolved = await resolveCloudMap(WORKSPACE_ID, appId);
-    if (!resolved) { socket.destroy(); return; }
-    const target = `ws://${resolved.ip}:${resolved.port}`;
+    if (!resolved) {
+      console.error(`[ws] No Cloud Map instance for ${appId}`);
+      socket.destroy();
+      return;
+    }
+    const target = `http://${resolved.ip}:${resolved.port}`;
+    console.log(`[ws] upgrading ${appId} → ${target}`);
 
-    createProxyMiddleware({
-      target,
-      changeOrigin: true,
-      ws: true,
-      pathRewrite: { [`^${BASE_PATH}/${appId}`]: '' },
-    }).upgrade(req, socket, head);
+    const cacheKey = `${appId}:${target}`;
+    if (!proxyInstanceCache[cacheKey]) {
+      proxyInstanceCache[cacheKey] = createProxyMiddleware({
+        target,
+        changeOrigin: true,
+        ws: true,
+        pathRewrite: { [`^${BASE_PATH}/${appId}`]: '' },
+      });
+    }
+    proxyInstanceCache[cacheKey].upgrade(req, socket, head);
   } catch (err) {
-    console.error(`[ws] Upgrade failed for ${appId}:`, err.message);
+    console.error(`[ws] upgrade failed for ${appId}:`, err.message);
     socket.destroy();
   }
 });

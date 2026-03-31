@@ -399,9 +399,10 @@ def get_cloudmap_service_id(workspace_id: str) -> str:
 # ---------------------------------------------------------------------------
 # ECS service (workspace)
 # ---------------------------------------------------------------------------
-def ensure_workspace_service(workspace_id: str, task_def_arn: str) -> str:
+def ensure_workspace_service(workspace_id: str, task_def_arn: str, tg_arn: str) -> str:
     """Create or update the workspace ECS service (landing page only).
     desiredCount=1, always running, service-scheduler managed.
+    TG attached so ECS registers/deregisters the task on every deployment automatically.
     """
     name = workspace_service_name(workspace_id)
 
@@ -434,6 +435,11 @@ def ensure_workspace_service(workspace_id: str, task_def_arn: str) -> str:
                 "assignPublicIp": "DISABLED",
             }
         },
+        loadBalancers=[{
+            "targetGroupArn": tg_arn,
+            "containerName": "landing-page",
+            "containerPort": LANDING_PAGE_PORT,
+        }],
         tags=[{"key": "WorkspaceId", "value": workspace_id}],
         enableECSManagedTags=True,
     )
@@ -697,12 +703,12 @@ def bootstrap_workspace(payload: WorkspaceBootstrap):
         # 2. Workspace task def (landing page only)
         workspace_task_def_arn = register_workspace_task_definition(workspace_id)
 
-        # 4. Workspace service
-        svc_name = ensure_workspace_service(workspace_id, workspace_task_def_arn)
-
-        # 5. TG + ALB rule
+        # 3. TG + ALB rule (must exist before service so ECS can attach TG on create)
         tg_arn = ensure_workspace_target_group(workspace_id)
         ensure_workspace_listener_rule(workspace_id, tg_arn)
+
+        # 4. Workspace service (tg_arn passed so new services get ECS-managed TG registration)
+        svc_name = ensure_workspace_service(workspace_id, workspace_task_def_arn, tg_arn)
 
         # 6. Wait for workspace service task, register to TG
         log.info("Waiting for workspace service task to be running...")

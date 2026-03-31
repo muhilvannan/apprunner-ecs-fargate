@@ -12,7 +12,7 @@
 
 **Requirements:** INFRA-01, INFRA-02, INFRA-03, CMAP-01, CMAP-04, CTRL-04
 
-**Plans:** 1/2 plans executed
+**Plans:** 2/2 plans complete
 
 Plans:
 - [ ] 01-01-PLAN.md — Strip Envoy from workspace task definition, fix TG port to LANDING_PAGE_PORT

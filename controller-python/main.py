@@ -697,9 +697,6 @@ def bootstrap_workspace(payload: WorkspaceBootstrap):
         # 2. Workspace task def (landing page only)
         workspace_task_def_arn = register_workspace_task_definition(workspace_id)
 
-        # 3. Cloud Map service (for app instance registration)
-        cloudmap_service_id = create_cloudmap_service(workspace_id)
-
         # 4. Workspace service
         svc_name = ensure_workspace_service(workspace_id, workspace_task_def_arn)
 
@@ -715,8 +712,8 @@ def bootstrap_workspace(payload: WorkspaceBootstrap):
         else:
             log.warning("Workspace task did not reach RUNNING — TG registration skipped")
 
-        # 7. Per-app: register task def, run_task
-        # Note: Cloud Map registration happens via /app/start endpoint, not bootstrap
+        # 7. Per-app: register task def, run_task, register in Cloud Map (static routes)
+        cloudmap_service_id = create_cloudmap_service(workspace_id)
         app_results = {}
         for app_def in payload.apps:
             app_id   = app_def.get("name", "app")
@@ -731,6 +728,20 @@ def bootstrap_workspace(payload: WorkspaceBootstrap):
                     running = wait_for_app_task_running(app_task_arn)
                     if running:
                         app_ip = wait_for_task_ip(app_task_arn)
+
+                # Register static Cloud Map route — InstanceId=app_id (stable across restarts)
+                if app_ip:
+                    _, port, _ = _app_config(app_type)
+                    sd.register_instance(
+                        ServiceId=cloudmap_service_id,
+                        InstanceId=app_id,
+                        Attributes={
+                            "AWS_INSTANCE_IPV4": app_ip,
+                            "AWS_INSTANCE_PORT": str(port),
+                            "app_id": app_id,
+                        },
+                    )
+                    log.info("Registered Cloud Map route: %s → %s:%d", app_id, app_ip, port)
 
                 app_results[app_id] = {
                     "url": app_url(workspace_id, app_id),
@@ -807,34 +818,30 @@ def list_workspace_apps(workspace_id: str):
 
 @app.post("/app/start")
 def start_app(payload: AppAction):
-    """Start an app: run_task if not running, then register in Cloud Map."""
+    """Start an app: run_task + update Cloud Map route with new IP (upsert)."""
     try:
         workspace_id = payload.workspaceId
         app_id       = payload.appId
 
         # Check if already running
         task_arns = _find_app_task_arns(workspace_id, app_id)
-        app_ip = None
         app_task_arn = None
+        app_ip = None
 
         if task_arns:
             app_task_arn = task_arns[0]
             app_ip = wait_for_task_ip(app_task_arn, retries=3, delay=2)
             log.info("App task already running: %s ip=%s", app_task_arn, app_ip)
         else:
-            # Re-run the task using the latest registered task definition
             family = app_task_family(workspace_id, app_id)
             app_role_arn = iam.get_role(RoleName=workspace_iam_role_name(workspace_id))["Role"]["Arn"]
 
-            # Get latest task def revision
             task_defs = ecs.list_task_definitions(familyPrefix=family, sort="DESC", maxResults=1)
             if not task_defs["taskDefinitionArns"]:
                 raise RuntimeError(f"No task definition found for {family}. Bootstrap workspace first.")
             task_def_arn = task_defs["taskDefinitionArns"][0]
 
-            # Reconstruct app_def from task definition to get app type
             td = ecs.describe_task_definition(taskDefinition=task_def_arn)["taskDefinition"]
-            # App type stored in task definition tags at registration time
             td_tags = {t["key"]: t["value"] for t in td.get("tags", [])}
             app_type = td_tags.get("AppType", "custom")
             app_def = {"name": app_id, "type": app_type}
@@ -849,29 +856,29 @@ def start_app(payload: AppAction):
 
             app_ip = wait_for_task_ip(app_task_arn)
 
-        if not app_ip:
-            raise RuntimeError("Could not get app task IP")
-
-        # Register in Cloud Map
-        service_id = get_cloudmap_service_id(workspace_id)
-        # Get port from task definition
-        family = app_task_family(workspace_id, app_id)
-        task_defs_resp = ecs.list_task_definitions(familyPrefix=family, sort="DESC", maxResults=1)
-        td = ecs.describe_task_definition(taskDefinition=task_defs_resp["taskDefinitionArns"][0])["taskDefinition"]
-        port = td["containerDefinitions"][0]["portMappings"][0]["containerPort"]
-
-        # Cloud Map InstanceId max 64 chars — use task ID, not full ARN
-        task_id = app_task_arn.split("/")[-1]
-        sd.register_instance(
-            ServiceId=service_id,
-            InstanceId=task_id,
-            Attributes={
-                "AWS_INSTANCE_IPV4": app_ip,
-                "AWS_INSTANCE_PORT": str(port),
-                "app_id": app_id,
-            },
-        )
-        log.info("Registered Cloud Map instance: %s → %s:%d", app_id, app_ip, port)
+        # Upsert Cloud Map route with current IP — register_instance updates if InstanceId exists
+        # This keeps the route current after task restarts (new Fargate IP each time)
+        if app_ip:
+            try:
+                service_id = get_cloudmap_service_id(workspace_id)
+                td_arn = ecs.list_task_definitions(
+                    familyPrefix=app_task_family(workspace_id, app_id), sort="DESC", maxResults=1
+                )["taskDefinitionArns"][0]
+                port = ecs.describe_task_definition(taskDefinition=td_arn)["taskDefinition"][
+                    "containerDefinitions"
+                ][0]["portMappings"][0]["containerPort"]
+                sd.register_instance(
+                    ServiceId=service_id,
+                    InstanceId=app_id,
+                    Attributes={
+                        "AWS_INSTANCE_IPV4": app_ip,
+                        "AWS_INSTANCE_PORT": str(port),
+                        "app_id": app_id,
+                    },
+                )
+                log.info("Cloud Map route updated: %s → %s:%d", app_id, app_ip, port)
+            except Exception as e:
+                log.warning("Cloud Map route update failed for %s: %s", app_id, e)
 
         return {
             "status": "app started",
@@ -887,27 +894,11 @@ def start_app(payload: AppAction):
 
 @app.post("/app/stop")
 def stop_app(payload: AppAction):
-    """Stop an app: deregister from Cloud Map first, then stop_task."""
+    """Stop an app: stop_task only. Cloud Map routes are managed at bootstrap."""
     try:
         workspace_id = payload.workspaceId
         app_id       = payload.appId
 
-        # Deregister from Cloud Map first (prevents traffic before task stops)
-        task_arns = _find_app_task_arns(workspace_id, app_id)
-        if task_arns:
-            service_id = get_cloudmap_service_id(workspace_id)
-            try:
-                task_id = task_arns[0].split("/")[-1]
-                sd.deregister_instance(ServiceId=service_id, InstanceId=task_id)
-                log.info("Deregistered Cloud Map instance: %s (task %s)", app_id, task_arns[0])
-            except sd.exceptions.InstanceNotFound:
-                log.warning("Cloud Map instance not found for %s — already deregistered?", app_id)
-            except Exception as e:
-                log.warning("Cloud Map deregister failed for %s: %s", app_id, e)
-        else:
-            log.warning("No running task found for app %s — skipping Cloud Map deregister", app_id)
-
-        # Stop the task
         stopped = stop_app_task(workspace_id, app_id)
         if not stopped:
             log.warning("No running task found for app %s — may already be stopped", app_id)

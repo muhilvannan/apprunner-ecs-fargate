@@ -308,7 +308,7 @@
 
     async function loadRoutes() {
         try {
-            const resp = await fetch('/internal/routes');
+            const resp = await fetch(`${BASE_PATH}/internal/routes`);
             const data = await resp.json();
             return data.apps || [];
         } catch {
@@ -379,7 +379,7 @@
         const panels = appData.map(app => `
             <div class="iframe-panel ${app.appId === activeTab ? 'active' : ''}" id="panel-${app.appId}">
                 <iframe src="${app.url}" title="${app.appId}" loading="lazy"
-                    sandbox="allow-scripts allow-same-origin allow-forms allow-popups"></iframe>
+                    sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox allow-downloads"></iframe>
             </div>
         `).join('');
 

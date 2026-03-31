@@ -25,6 +25,10 @@ const CLOUDMAP_NAMESPACE = 'workspace-discovery.local';
 const cloudMapCache = {};
 const CACHE_TTL_MS = 5000;
 
+// Proxy instance cache keyed by "appId:target" — reused across requests to
+// avoid creating new EventEmitter listeners on every request (MaxListeners warning)
+const proxyInstanceCache = {};
+
 async function resolveCloudMap(workspaceId, appId) {
   const now = Date.now();
   const cached = cloudMapCache[workspaceId];
@@ -60,6 +64,12 @@ app.use(`${BASE_PATH}/:appId`, async (req, res, next) => {
   // Don't proxy internal endpoints
   if (appId === 'internal') return next();
 
+  // Redirect bare app root (no trailing slash) so relative assets resolve correctly
+  // e.g. /workspace23456/app-2 → /workspace23456/app-2/
+  if (req.originalUrl === `${BASE_PATH}/${appId}`) {
+    return res.redirect(301, `${BASE_PATH}/${appId}/`);
+  }
+
   let target;
   try {
     const resolved = await resolveCloudMap(WORKSPACE_ID, appId);
@@ -75,11 +85,12 @@ app.use(`${BASE_PATH}/:appId`, async (req, res, next) => {
   createProxyMiddleware({
     target,
     changeOrigin: true,
+    ws: true,
     pathRewrite: { [`^${BASE_PATH}/${appId}`]: '' },
     on: {
       error: (proxyErr, _req, proxyRes) => {
         console.error(`[proxy] Error forwarding ${appId}:`, proxyErr.message);
-        if (!proxyRes.headersSent) {
+        if (proxyRes && !proxyRes.headersSent) {
           proxyRes.status(502).json({ error: 'Upstream error' });
         }
       },
@@ -89,8 +100,9 @@ app.use(`${BASE_PATH}/:appId`, async (req, res, next) => {
 
 // ---------------------------------------------------------------------------
 // Internal routes API — live Cloud Map query (LP-05, D-08)
+// Registered under BASE_PATH so it routes through the ALB /workspace{id}/* rule
 // ---------------------------------------------------------------------------
-app.get('/internal/routes', async (req, res) => {
+app.get(`${BASE_PATH}/internal/routes`, async (req, res) => {
   try {
     const resp = await sdClient.send(new DiscoverInstancesCommand({
       NamespaceName: CLOUDMAP_NAMESPACE,
@@ -135,16 +147,40 @@ app.get('/', (req, res) => {
 
 function serveHub(res) {
   const html = fs.readFileSync(path.join(__dirname, 'index.html'), 'utf8')
-    .replace('__WORKSPACE_ID__', WORKSPACE_ID)
-    .replace('__BASE_PATH__', BASE_PATH)
-    .replace('__DOMAIN__', DOMAIN);
+    .replaceAll('__WORKSPACE_ID__', WORKSPACE_ID)
+    .replaceAll('__BASE_PATH__', BASE_PATH)
+    .replaceAll('__DOMAIN__', DOMAIN);
   res.type('html').send(html);
 }
 
 // ---------------------------------------------------------------------------
-// Start
+// Start — attach upgrade handler so WebSocket connections are proxied
 // ---------------------------------------------------------------------------
-app.listen(PORT, () => {
+const server = app.listen(PORT, () => {
   console.log(`[landing-page] Workspace ${WORKSPACE_ID} hub listening on port ${PORT}`);
   console.log(`[landing-page] BASE_PATH=${BASE_PATH}  DOMAIN=${DOMAIN}`);
+});
+
+// WebSocket upgrade: resolve target from Cloud Map then proxy the upgrade
+server.on('upgrade', async (req, socket, head) => {
+  const url = req.url || '';
+  const match = url.match(new RegExp(`^${BASE_PATH.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}/([^/]+)`));
+  if (!match) { socket.destroy(); return; }
+  const appId = match[1];
+
+  try {
+    const resolved = await resolveCloudMap(WORKSPACE_ID, appId);
+    if (!resolved) { socket.destroy(); return; }
+    const target = `ws://${resolved.ip}:${resolved.port}`;
+
+    createProxyMiddleware({
+      target,
+      changeOrigin: true,
+      ws: true,
+      pathRewrite: { [`^${BASE_PATH}/${appId}`]: '' },
+    }).upgrade(req, socket, head);
+  } catch (err) {
+    console.error(`[ws] Upgrade failed for ${appId}:`, err.message);
+    socket.destroy();
+  }
 });

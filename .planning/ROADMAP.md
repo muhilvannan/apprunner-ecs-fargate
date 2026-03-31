@@ -31,11 +31,11 @@ Plans:
 
 **Requirements:** CMAP-02, CMAP-03, LP-01, LP-02, LP-03, LP-04, LP-05, LP-06, CTRL-01, CTRL-02, CTRL-03
 
-**Plans:** 2 plans
+**Plans:** 2/2 plans complete
 
 Plans:
-- [ ] 02-01-PLAN.md — Controller: Cloud Map register/deregister on app start/stop, remove Envoy route functions
-- [ ] 02-02-PLAN.md — Landing page: http-proxy-middleware + Cloud Map SDK lookup, IAM permission
+- [x] 02-01-PLAN.md — Controller: Cloud Map register/deregister on app start/stop, remove Envoy route functions
+- [x] 02-02-PLAN.md — Landing page: http-proxy-middleware + Cloud Map SDK lookup, IAM permission
 
 **Success Criteria:**
 1. App start registers in Cloud Map; app accessible through landing page proxy

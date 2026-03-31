@@ -36,6 +36,9 @@ Current Plan: 2/2 complete
 - pathRewrite strips /workspace{id}/{appId} prefix before forwarding — matches prior Envoy prefix_rewrite: '/' behaviour (02-02)
 - Cloud Map cache keyed by workspaceId not appId — one cache entry per workspace covers all apps (02-02)
 - IAM DiscoverInstances on Resource: '*' — Cloud Map does not support resource-level restrictions (02-02)
+- app_task_arn used as Cloud Map InstanceId — ties instance record to ECS task ARN, enables deregister by ARN on stop (02-01)
+- deregister_instance called before stop_app_task — prevents routing to task while shutting down (D-01) (02-01)
+- discover_instances called directly in list_workspace_apps — API accepts NamespaceName+ServiceName, not service ID (02-01)
 
 ## Next Action
 
@@ -43,4 +46,4 @@ Phase 02 complete. All Cloud Map proxy and landing page routing is implemented. 
 
 ---
 *Initialized: 2026-03-30*
-*Last session: 2026-03-31 — Completed 02-02-PLAN.md*
+*Last session: 2026-03-31 — Completed 02-01-PLAN.md*

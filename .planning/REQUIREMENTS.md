@@ -15,8 +15,8 @@
 ### Cloud Map — Service Discovery
 
 - [x] **CMAP-01**: Controller creates a Cloud Map service (`{workspaceId}-apps`) per workspace at bootstrap time
-- [ ] **CMAP-02**: Controller registers app task IP + port in Cloud Map on app start (`register_instance`)
-- [ ] **CMAP-03**: Controller deregisters app instance from Cloud Map on app stop (`deregister_instance`)
+- [x] **CMAP-02**: Controller registers app task IP + port in Cloud Map on app start (`register_instance`)
+- [x] **CMAP-03**: Controller deregisters app instance from Cloud Map on app stop (`deregister_instance`)
 - [x] **CMAP-04**: Cloud Map health check configured (`FailureThreshold: 1`) to auto-deregister crashed tasks
 
 ### Landing Page — Proxy + Discovery
@@ -30,9 +30,9 @@
 
 ### Controller — Route API Cleanup
 
-- [ ] **CTRL-01**: Remove `register_app_route` and `remove_app_route` controller functions (Envoy route management)
-- [ ] **CTRL-02**: App start flow: `run_task` → `wait_for_task_ip` → `register_instance` (replaces run_task → wait → POST /internal/routes/add)
-- [ ] **CTRL-03**: App stop flow: `deregister_instance` → `stop_task` (replaces POST /internal/routes/remove → stop_task)
+- [x] **CTRL-01**: Remove `register_app_route` and `remove_app_route` controller functions (Envoy route management)
+- [x] **CTRL-02**: App start flow: `run_task` → `wait_for_task_ip` → `register_instance` (replaces run_task → wait → POST /internal/routes/add)
+- [x] **CTRL-03**: App stop flow: `deregister_instance` → `stop_task` (replaces POST /internal/routes/remove → stop_task)
 - [x] **CTRL-04**: Bootstrap flow creates Cloud Map service before launching workspace service
 
 ### Docs & Standards
@@ -78,8 +78,8 @@
 | INFRA-02 | Phase 1 | Complete |
 | INFRA-03 | Phase 1 | Complete |
 | CMAP-01 | Phase 1 | Complete |
-| CMAP-02 | Phase 2 | Pending |
-| CMAP-03 | Phase 2 | Pending |
+| CMAP-02 | Phase 2 | Complete |
+| CMAP-03 | Phase 2 | Complete |
 | CMAP-04 | Phase 1 | Complete |
 | LP-01 | Phase 2 | Complete |
 | LP-02 | Phase 2 | Complete |
@@ -87,9 +87,9 @@
 | LP-04 | Phase 2 | Complete |
 | LP-05 | Phase 2 | Complete |
 | LP-06 | Phase 2 | Complete |
-| CTRL-01 | Phase 2 | Pending |
-| CTRL-02 | Phase 2 | Pending |
-| CTRL-03 | Phase 2 | Pending |
+| CTRL-01 | Phase 2 | Complete |
+| CTRL-02 | Phase 2 | Complete |
+| CTRL-03 | Phase 2 | Complete |
 | CTRL-04 | Phase 1 | Complete |
 | DOC-01 | Phase 3 | Pending |
 | DOC-02 | Phase 3 | Pending |
@@ -102,4 +102,4 @@
 
 ---
 *Requirements defined: 2026-03-30*
-*Last updated: 2026-03-30 after Option C experiment initialization*
+*Last updated: 2026-03-31 after 02-01 controller Cloud Map wiring*

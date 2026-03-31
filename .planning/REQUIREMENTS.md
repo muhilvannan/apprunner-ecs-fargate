@@ -21,12 +21,12 @@
 
 ### Landing Page — Proxy + Discovery
 
-- [ ] **LP-01**: Landing page proxies `GET/POST /workspace{id}/{appId}/*` to app task via `http-proxy-middleware`
-- [ ] **LP-02**: Landing page resolves app IP + port via Cloud Map `DiscoverInstances` API call (not DNS)
-- [ ] **LP-03**: Landing page caches Cloud Map lookups with short TTL (≤5s) to reduce API calls per request
-- [ ] **LP-04**: Landing page returns 503 when app instance not found in Cloud Map (not running)
-- [ ] **LP-05**: `GET /internal/routes` queries Cloud Map API and returns live app list (replaces in-memory Envoy route table)
-- [ ] **LP-06**: Remove all Envoy config management code (`/internal/routes/add`, `/internal/routes/remove`, `writeEnvoyConfig`, `reloadEnvoy`, `kill -SIGHUP`)
+- [x] **LP-01**: Landing page proxies `GET/POST /workspace{id}/{appId}/*` to app task via `http-proxy-middleware`
+- [x] **LP-02**: Landing page resolves app IP + port via Cloud Map `DiscoverInstances` API call (not DNS)
+- [x] **LP-03**: Landing page caches Cloud Map lookups with short TTL (≤5s) to reduce API calls per request
+- [x] **LP-04**: Landing page returns 503 when app instance not found in Cloud Map (not running)
+- [x] **LP-05**: `GET /internal/routes` queries Cloud Map API and returns live app list (replaces in-memory Envoy route table)
+- [x] **LP-06**: Remove all Envoy config management code (`/internal/routes/add`, `/internal/routes/remove`, `writeEnvoyConfig`, `reloadEnvoy`, `kill -SIGHUP`)
 
 ### Controller — Route API Cleanup
 
@@ -81,12 +81,12 @@
 | CMAP-02 | Phase 2 | Pending |
 | CMAP-03 | Phase 2 | Pending |
 | CMAP-04 | Phase 1 | Complete |
-| LP-01 | Phase 2 | Pending |
-| LP-02 | Phase 2 | Pending |
-| LP-03 | Phase 2 | Pending |
-| LP-04 | Phase 2 | Pending |
-| LP-05 | Phase 2 | Pending |
-| LP-06 | Phase 2 | Pending |
+| LP-01 | Phase 2 | Complete |
+| LP-02 | Phase 2 | Complete |
+| LP-03 | Phase 2 | Complete |
+| LP-04 | Phase 2 | Complete |
+| LP-05 | Phase 2 | Complete |
+| LP-06 | Phase 2 | Complete |
 | CTRL-01 | Phase 2 | Pending |
 | CTRL-02 | Phase 2 | Pending |
 | CTRL-03 | Phase 2 | Pending |

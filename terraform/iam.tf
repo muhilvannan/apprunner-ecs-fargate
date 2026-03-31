@@ -1,6 +1,6 @@
 # ECS Task Execution Role (can pull images, push logs, etc.)
 resource "aws_iam_role" "ecs_task_execution_role" {
-  name = "ecs-task-execution-role-${local.environment}"
+  name = "${local.project}-exec-role-${local.environment}"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -16,7 +16,7 @@ resource "aws_iam_role" "ecs_task_execution_role" {
   })
 
   tags = {
-    Name = "ecs-task-execution-role-${local.environment}"
+    Name = "${local.project}-exec-role-${local.environment}"
   }
 }
 
@@ -28,7 +28,7 @@ resource "aws_iam_role_policy_attachment" "ecs_task_execution_role_policy" {
 
 # Inline policy for CloudWatch logs
 resource "aws_iam_role_policy" "ecs_task_execution_cloudwatch" {
-  name = "ecs-task-execution-cloudwatch-${local.environment}"
+  name = "${local.project}-exec-cw-${local.environment}"
   role = aws_iam_role.ecs_task_execution_role.id
 
   policy = jsonencode({
@@ -52,7 +52,7 @@ resource "aws_iam_role_policy" "ecs_task_execution_cloudwatch" {
 
 # ECS Workspace Task Role (base role, will be customized per workspace)
 resource "aws_iam_role" "ecs_workspace_task_role" {
-  name = "ecs-workspace-task-role-${local.environment}"
+  name = "${local.project}-ws-task-role-${local.environment}"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -68,9 +68,26 @@ resource "aws_iam_role" "ecs_workspace_task_role" {
   })
 
   tags = {
-    Name = "ecs-workspace-task-role-${local.environment}"
+    Name = "${local.project}-ws-task-role-${local.environment}"
     Type = "workspace-base"
   }
+}
+
+# Inline policy: Cloud Map service discovery for landing-page proxy
+resource "aws_iam_role_policy" "ecs_workspace_task_cloudmap" {
+  name = "${local.project}-ws-task-cloudmap-${local.environment}"
+  role = aws_iam_role.ecs_workspace_task_role.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = ["servicediscovery:DiscoverInstances"]
+        Resource = "*"
+      }
+    ]
+  })
 }
 
 # Data source for reusable S3 bucket access policy (for controller to use)

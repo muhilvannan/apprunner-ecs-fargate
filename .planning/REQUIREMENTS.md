@@ -14,10 +14,10 @@
 
 ### Cloud Map — Service Discovery
 
-- [ ] **CMAP-01**: Controller creates a Cloud Map service (`{workspaceId}-apps`) per workspace at bootstrap time
+- [x] **CMAP-01**: Controller creates a Cloud Map service (`{workspaceId}-apps`) per workspace at bootstrap time
 - [ ] **CMAP-02**: Controller registers app task IP + port in Cloud Map on app start (`register_instance`)
 - [ ] **CMAP-03**: Controller deregisters app instance from Cloud Map on app stop (`deregister_instance`)
-- [ ] **CMAP-04**: Cloud Map health check configured (`FailureThreshold: 1`) to auto-deregister crashed tasks
+- [x] **CMAP-04**: Cloud Map health check configured (`FailureThreshold: 1`) to auto-deregister crashed tasks
 
 ### Landing Page — Proxy + Discovery
 
@@ -33,7 +33,7 @@
 - [ ] **CTRL-01**: Remove `register_app_route` and `remove_app_route` controller functions (Envoy route management)
 - [ ] **CTRL-02**: App start flow: `run_task` → `wait_for_task_ip` → `register_instance` (replaces run_task → wait → POST /internal/routes/add)
 - [ ] **CTRL-03**: App stop flow: `deregister_instance` → `stop_task` (replaces POST /internal/routes/remove → stop_task)
-- [ ] **CTRL-04**: Bootstrap flow creates Cloud Map service before launching workspace service
+- [x] **CTRL-04**: Bootstrap flow creates Cloud Map service before launching workspace service
 
 ### Docs & Standards
 
@@ -77,10 +77,10 @@
 | INFRA-01 | Phase 1 | Complete |
 | INFRA-02 | Phase 1 | Complete |
 | INFRA-03 | Phase 1 | Complete |
-| CMAP-01 | Phase 1 | Pending |
+| CMAP-01 | Phase 1 | Complete |
 | CMAP-02 | Phase 2 | Pending |
 | CMAP-03 | Phase 2 | Pending |
-| CMAP-04 | Phase 1 | Pending |
+| CMAP-04 | Phase 1 | Complete |
 | LP-01 | Phase 2 | Pending |
 | LP-02 | Phase 2 | Pending |
 | LP-03 | Phase 2 | Pending |
@@ -90,7 +90,7 @@
 | CTRL-01 | Phase 2 | Pending |
 | CTRL-02 | Phase 2 | Pending |
 | CTRL-03 | Phase 2 | Pending |
-| CTRL-04 | Phase 1 | Pending |
+| CTRL-04 | Phase 1 | Complete |
 | DOC-01 | Phase 3 | Pending |
 | DOC-02 | Phase 3 | Pending |
 | DOC-03 | Phase 3 | Pending |

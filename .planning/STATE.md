@@ -12,8 +12,8 @@ See: specs/PROJECT.md (updated 2026-03-30)
 
 **Phase 1: Infra Swap — Drop Envoy, Wire Cloud Map**
 
-Status: In progress
-Current Plan: 1/2 complete
+Status: Complete
+Current Plan: 2/2 complete
 
 ## Phase History
 
@@ -30,11 +30,14 @@ Current Plan: 1/2 complete
 - Removed Envoy sidecar entirely — Option C uses Node.js http-proxy-middleware in landing page instead (01-01)
 - ALB TG now points to LANDING_PAGE_PORT (3001) directly; no Envoy port intermediary (01-01)
 - volumes=[] passed explicitly to register_task_definition for clarity (01-01)
+- FailureThreshold: 1 for Cloud Map health check — fastest auto-deregistration on task crash (01-02)
+- Idempotent Cloud Map service creation: list_services paginator check before create_service (01-02)
+- Bootstrap step ordering: Cloud Map service created as step 3, before ECS service launch (01-02)
 
 ## Next Action
 
-Execute plan 01-02: Cloud Map wiring
+Phase 01 complete. Execute Phase 02: App Routing (app start/stop with Cloud Map register/deregister)
 
 ---
 *Initialized: 2026-03-30*
-*Last session: 2026-03-30 — Completed 01-01-PLAN.md*
+*Last session: 2026-03-31 — Completed 01-02-PLAN.md*

@@ -5,7 +5,6 @@ import json
 import logging
 import os
 import time
-import httpx
 
 logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
 log = logging.getLogger(__name__)
@@ -400,6 +399,22 @@ def create_cloudmap_service(workspace_id: str) -> str:
     log.info("Cloud Map service created: %s (id=%s)", svc_name, svc_id)
     return svc_id
 
+def get_cloudmap_service_id(workspace_id: str) -> str:
+    """Look up the Cloud Map service ID for a workspace. Raises RuntimeError if not found."""
+    svc_name = cloudmap_service_name(workspace_id)
+    paginator = sd.get_paginator("list_services")
+    for page in paginator.paginate(
+        Filters=[{
+            "Name": "NAMESPACE_ID",
+            "Values": [CLOUDMAP_NAMESPACE_ID],
+            "Condition": "EQ",
+        }]
+    ):
+        for svc in page.get("Services", []):
+            if svc["Name"] == svc_name:
+                return svc["Id"]
+    raise RuntimeError(f"Cloud Map service not found for workspace {workspace_id}. Bootstrap first.")
+
 # ---------------------------------------------------------------------------
 # ECS service (workspace)
 # ---------------------------------------------------------------------------
@@ -651,40 +666,6 @@ def register_workspace_to_tg(task_arn: str, tg_arn: str) -> None:
         return
     log.info("Registering workspace task %s:%d → TG", ip, LANDING_PAGE_PORT)
     elbv2.register_targets(TargetGroupArn=tg_arn, Targets=[{"Id": ip, "Port": LANDING_PAGE_PORT}])
-
-# ---------------------------------------------------------------------------
-# Envoy route management via landing page internal API
-# ---------------------------------------------------------------------------
-def get_landing_page_ip(workspace_id: str) -> str | None:
-    """Return the private IP of the workspace service task (landing page)."""
-    task_arns = ecs.list_tasks(cluster=CLUSTER, serviceName=workspace_id, desiredStatus="RUNNING").get("taskArns", [])
-    if not task_arns:
-        return None
-    return wait_for_task_ip(task_arns[0], retries=3, delay=2)
-
-def register_app_route(workspace_ip: str, app_id: str, app_ip: str, port: int, base_path: str) -> bool:
-    """Tell the landing page to add an Envoy route for this app."""
-    url = f"http://{workspace_ip}:{LANDING_PAGE_PORT}/internal/routes/add"
-    try:
-        resp = httpx.post(url, json={"appId": app_id, "appIP": app_ip, "port": port, "basePath": base_path}, timeout=10)
-        resp.raise_for_status()
-        log.info("Registered Envoy route for app %s → %s:%d", app_id, app_ip, port)
-        return True
-    except Exception as e:
-        log.warning("Failed to register Envoy route for app %s: %s", app_id, e)
-        return False
-
-def deregister_app_route(workspace_ip: str, app_id: str) -> bool:
-    """Tell the landing page to remove the Envoy route for this app."""
-    url = f"http://{workspace_ip}:{LANDING_PAGE_PORT}/internal/routes/remove"
-    try:
-        resp = httpx.post(url, json={"appId": app_id}, timeout=10)
-        resp.raise_for_status()
-        log.info("Deregistered Envoy route for app %s", app_id)
-        return True
-    except Exception as e:
-        log.warning("Failed to deregister Envoy route for app %s: %s", app_id, e)
-        return False
 
 # ---------------------------------------------------------------------------
 # Routes

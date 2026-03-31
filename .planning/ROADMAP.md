@@ -51,7 +51,7 @@ Plans:
 **Requirements:** DOC-01, DOC-02, DOC-03
 
 **Plans:**
-- [ ] Plan 3-A: Update ADR-002 with 3-option comparison table
+0/0 plans complete
 - [ ] Plan 3-B: Update CLAUDE.md — Option C architecture + cheap-infra standards
 
 **Success Criteria:**

@@ -354,6 +354,53 @@ def register_app_task_definition(workspace_id: str, app_def: dict, app_role_arn:
     return arn
 
 # ---------------------------------------------------------------------------
+# Cloud Map — per-workspace service registry
+# ---------------------------------------------------------------------------
+def create_cloudmap_service(workspace_id: str) -> str:
+    """Create (or return existing) Cloud Map service for workspace app discovery.
+    Service name: {workspaceId}-apps  in namespace workspace-discovery.local
+    FailureThreshold: 1 — auto-deregisters instances when health check fails once.
+    Returns the Cloud Map service ID.
+    """
+    svc_name = cloudmap_service_name(workspace_id)
+
+    # Idempotent: check if service already exists in the namespace
+    try:
+        paginator = sd.get_paginator("list_services")
+        for page in paginator.paginate(
+            Filters=[{
+                "Name": "NAMESPACE_ID",
+                "Values": [CLOUDMAP_NAMESPACE_ID],
+                "Condition": "EQ",
+            }]
+        ):
+            for svc in page.get("Services", []):
+                if svc["Name"] == svc_name:
+                    log.info("Cloud Map service already exists: %s (id=%s)", svc_name, svc["Id"])
+                    return svc["Id"]
+    except Exception as e:
+        log.warning("Could not check existing Cloud Map services: %s", e)
+
+    log.info("Creating Cloud Map service: %s in namespace %s", svc_name, CLOUDMAP_NAMESPACE_ID)
+    resp = sd.create_service(
+        Name=svc_name,
+        NamespaceId=CLOUDMAP_NAMESPACE_ID,
+        DnsConfig={
+            "NamespaceId": CLOUDMAP_NAMESPACE_ID,
+            "DnsRecords": [{"Type": "A", "TTL": 10}],
+        },
+        HealthCheckCustomConfig={"FailureThreshold": 1},
+        Description=f"App service discovery for workspace {workspace_id}",
+        Tags=[
+            {"Key": "WorkspaceId", "Value": workspace_id},
+            {"Key": "ManagedBy", "Value": "ecs-controller"},
+        ],
+    )
+    svc_id = resp["Service"]["Id"]
+    log.info("Cloud Map service created: %s (id=%s)", svc_name, svc_id)
+    return svc_id
+
+# ---------------------------------------------------------------------------
 # ECS service (workspace)
 # ---------------------------------------------------------------------------
 def ensure_workspace_service(workspace_id: str, task_def_arn: str) -> str:
@@ -669,10 +716,11 @@ def bootstrap_workspace(payload: WorkspaceBootstrap):
     """
     1. Create workspace-scoped IAM role for app tasks.
     2. Register workspace service task def (landing-page only).
-    3. Create/update workspace ECS service (desiredCount=1).
-    4. Create workspace target group (→ landing page port) + ALB listener rule.
-    5. Wait for workspace service task to be running, register to TG.
-    6. For each app:
+    3. Cloud Map service (for app instance registration).
+    4. Create/update workspace ECS service (desiredCount=1).
+    5. Create workspace target group (→ landing page port) + ALB listener rule.
+    6. Wait for workspace service task to be running, register to TG.
+    7. For each app:
        a. Register single-container app task definition.
        b. run_task with workspace IAM role.
        c. Wait for task running + get IP.
@@ -687,14 +735,17 @@ def bootstrap_workspace(payload: WorkspaceBootstrap):
         # 2. Workspace task def (landing page only)
         workspace_task_def_arn = register_workspace_task_definition(workspace_id)
 
-        # 3. Workspace service
+        # 3. Cloud Map service (for app instance registration)
+        cloudmap_service_id = create_cloudmap_service(workspace_id)
+
+        # 4. Workspace service
         svc_name = ensure_workspace_service(workspace_id, workspace_task_def_arn)
 
-        # 4. TG + ALB rule
+        # 5. TG + ALB rule
         tg_arn = ensure_workspace_target_group(workspace_id)
         ensure_workspace_listener_rule(workspace_id, tg_arn)
 
-        # 5. Wait for workspace service task, register to TG
+        # 6. Wait for workspace service task, register to TG
         log.info("Waiting for workspace service task to be running...")
         workspace_task_arn = wait_for_task_running(svc_name)
         if workspace_task_arn:
@@ -702,10 +753,10 @@ def bootstrap_workspace(payload: WorkspaceBootstrap):
         else:
             log.warning("Workspace task did not reach RUNNING — TG registration skipped")
 
-        # Get workspace task IP for Envoy route management
+        # Get workspace task IP (for legacy Envoy route management — removed in Phase 2)
         workspace_ip = wait_for_task_ip(workspace_task_arn) if workspace_task_arn else None
 
-        # 6. Per-app: register task def, run_task, register Envoy route
+        # 7. Per-app: register task def, run_task, register Envoy route
         app_results = {}
         for app_def in payload.apps:
             app_id   = app_def.get("name", "app")
@@ -742,6 +793,7 @@ def bootstrap_workspace(payload: WorkspaceBootstrap):
             "status": "workspace bootstrapped",
             "workspaceId": workspace_id,
             "service": svc_name,
+            "cloudmapServiceId": cloudmap_service_id,
             "workspaceUrl": workspace_url(workspace_id),
             "apps": app_results,
         }

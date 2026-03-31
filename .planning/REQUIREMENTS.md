@@ -37,9 +37,9 @@
 
 ### Docs & Standards
 
-- [ ] **DOC-01**: ADR-002 updated with unified 3-option comparison table (Option A / B / C side-by-side)
-- [ ] **DOC-02**: CLAUDE.md updated with cheap-infra development standard: single NAT GW, no HA for experiment stack
-- [ ] **DOC-03**: CLAUDE.md updated to reflect Option C architecture (remove Envoy references, add Cloud Map)
+- [x] **DOC-01**: ADR-002 updated with unified 3-option comparison table (Option A / B / C side-by-side)
+- [x] **DOC-02**: CLAUDE.md updated with cheap-infra development standard: single NAT GW, no HA for experiment stack
+- [x] **DOC-03**: CLAUDE.md updated to reflect Option C architecture (remove Envoy references, add Cloud Map)
 
 ## v2 Requirements (Deferred)
 
@@ -91,9 +91,9 @@
 | CTRL-02 | Phase 2 | Complete |
 | CTRL-03 | Phase 2 | Complete |
 | CTRL-04 | Phase 1 | Complete |
-| DOC-01 | Phase 3 | Pending |
-| DOC-02 | Phase 3 | Pending |
-| DOC-03 | Phase 3 | Pending |
+| DOC-01 | Phase 3 | Complete |
+| DOC-02 | Phase 3 | Complete |
+| DOC-03 | Phase 3 | Complete |
 
 **Coverage:**
 - v1 requirements: 20 total

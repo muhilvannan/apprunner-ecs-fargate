@@ -52,6 +52,7 @@ async function resolveCloudMap(workspaceId, appId) {
   return {
     ip: match.Attributes.AWS_INSTANCE_IPV4,
     port: match.Attributes.AWS_INSTANCE_PORT,
+    appType: match.Attributes.app_type || 'custom',
   };
 }
 
@@ -84,11 +85,16 @@ app.use(`${BASE_PATH}/:appId`, async (req, res, next) => {
 
   const cacheKey = `${appId}:${target}`;
   if (!proxyInstanceCache[cacheKey]) {
+    // Streamlit uses --server.baseUrlPath so it expects the full prefixed path.
+    // Other app types handle the stripped path themselves.
+    const pathRewrite = resolved.appType === 'streamlit'
+      ? undefined
+      : { [`^${BASE_PATH}/${appId}`]: '' };
     proxyInstanceCache[cacheKey] = createProxyMiddleware({
       target,
       changeOrigin: true,
       ws: true,
-      pathRewrite: { [`^${BASE_PATH}/${appId}`]: '' },
+      ...(pathRewrite && { pathRewrite }),
       on: {
         error: (proxyErr, _req, proxyRes) => {
           console.error(`[proxy] Error forwarding ${appId}:`, proxyErr.message);
@@ -187,11 +193,14 @@ server.on('upgrade', async (req, socket, head) => {
 
     const cacheKey = `${appId}:${target}`;
     if (!proxyInstanceCache[cacheKey]) {
+      const pathRewrite = resolved.appType === 'streamlit'
+        ? undefined
+        : { [`^${BASE_PATH}/${appId}`]: '' };
       proxyInstanceCache[cacheKey] = createProxyMiddleware({
         target,
         changeOrigin: true,
         ws: true,
-        pathRewrite: { [`^${BASE_PATH}/${appId}`]: '' },
+        ...(pathRewrite && { pathRewrite }),
       });
     }
     proxyInstanceCache[cacheKey].upgrade(req, socket, head);

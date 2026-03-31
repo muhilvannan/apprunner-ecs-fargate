@@ -75,7 +75,8 @@ def _app_config(app_type: str, workspace_id: str = "", app_id: str = ""):
         command = ["sh", "-c",
                    f"pip install --quiet streamlit && "
                    f"python -m streamlit hello "
-                   f"--server.port=8501 --server.headless=true --server.address=0.0.0.0"]
+                   f"--server.port=8501 --server.headless=true --server.address=0.0.0.0 "
+                   f"--server.baseUrlPath={base_path}"]
 
     elif app_type == "reactjs":
         command = ["sh", "-c",
@@ -745,6 +746,7 @@ def bootstrap_workspace(payload: WorkspaceBootstrap):
                             "AWS_INSTANCE_IPV4": app_ip,
                             "AWS_INSTANCE_PORT": str(port),
                             "app_id": app_id,
+                            "app_type": app_type,
                         },
                     )
                     log.info("Registered Cloud Map route: %s → %s:%d", app_id, app_ip, port)
@@ -845,12 +847,14 @@ def start_app(payload: AppAction):
             task_defs = ecs.list_task_definitions(familyPrefix=family, sort="DESC", maxResults=1)
             if not task_defs["taskDefinitionArns"]:
                 raise RuntimeError(f"No task definition found for {family}. Bootstrap workspace first.")
-            task_def_arn = task_defs["taskDefinitionArns"][0]
+            existing_td_arn = task_defs["taskDefinitionArns"][0]
 
-            td = ecs.describe_task_definition(taskDefinition=task_def_arn)["taskDefinition"]
+            td = ecs.describe_task_definition(taskDefinition=existing_td_arn)["taskDefinition"]
             td_tags = {t["key"]: t["value"] for t in td.get("tags", [])}
             app_type = td_tags.get("AppType", "custom")
             app_def = {"name": app_id, "type": app_type}
+
+            task_def_arn = register_app_task_definition(workspace_id, app_def, app_role_arn)
 
             app_task_arn = run_app_task(workspace_id, app_def, task_def_arn, app_role_arn)
             if not app_task_arn:
@@ -870,9 +874,9 @@ def start_app(payload: AppAction):
                 td_arn = ecs.list_task_definitions(
                     familyPrefix=app_task_family(workspace_id, app_id), sort="DESC", maxResults=1
                 )["taskDefinitionArns"][0]
-                port = ecs.describe_task_definition(taskDefinition=td_arn)["taskDefinition"][
-                    "containerDefinitions"
-                ][0]["portMappings"][0]["containerPort"]
+                td_info = ecs.describe_task_definition(taskDefinition=td_arn)["taskDefinition"]
+                port = td_info["containerDefinitions"][0]["portMappings"][0]["containerPort"]
+                td_tags_cm = {t["key"]: t["value"] for t in td_info.get("tags", [])}
                 sd.register_instance(
                     ServiceId=service_id,
                     InstanceId=app_id,
@@ -880,6 +884,7 @@ def start_app(payload: AppAction):
                         "AWS_INSTANCE_IPV4": app_ip,
                         "AWS_INSTANCE_PORT": str(port),
                         "app_id": app_id,
+                        "app_type": td_tags_cm.get("AppType", "custom"),
                     },
                 )
                 log.info("Cloud Map route updated: %s → %s:%d", app_id, app_ip, port)

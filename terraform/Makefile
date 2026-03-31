@@ -67,13 +67,13 @@ workspace-delete:
 # Named workspace shortcuts — select (or create) then plan/apply
 # ---------------------------------------------------------------------------
 
-dev:
-	terraform workspace select dev 2>/dev/null || terraform workspace new dev
-	@echo "[terraform] Switched to workspace: dev"
+# dev:
+# 	terraform workspace select dev 2>/dev/null || terraform workspace new dev
+# 	@echo "[terraform] Switched to workspace: dev"
 
-staging:
-	terraform workspace select staging 2>/dev/null || terraform workspace new staging
-	@echo "[terraform] Switched to workspace: staging"
+# staging:
+# 	terraform workspace select staging 2>/dev/null || terraform workspace new staging
+# 	@echo "[terraform] Switched to workspace: staging"
 
 prod:
 	terraform workspace select prod 2>/dev/null || terraform workspace new prod
@@ -96,6 +96,30 @@ experiment-apply: experiment plan apply output
 experiment-destroy: experiment destroy
 	@echo "[terraform] Experiment stack destroyed"
 
+# Export outputs for experiment workspace
+experiment-output: experiment output
+
 # Prod stack shortcuts (brewer.muhilvannan.com)
 prod-apply: prod plan apply output
 prod-destroy: prod destroy
+
+# ---------------------------------------------------------------------------
+# Nuke all workspaces — destroys infra in every non-default workspace then
+# deletes the workspace. Skips the built-in 'default' workspace (no destroy).
+# ---------------------------------------------------------------------------
+destroy-all:
+	@echo "[terraform] WARNING: This will destroy ALL workspaces including default (prod)."
+	@echo "[terraform] Press Ctrl-C within 5 seconds to abort..."
+	@sleep 5
+	@for WS in $$(terraform workspace list | tr -d '* ' | grep -v '^$$'); do \
+		echo ""; \
+		echo "=== Destroying workspace: $$WS ==="; \
+		terraform workspace select $$WS; \
+		terraform destroy -var-file=terraform.tfvars -auto-approve || true; \
+		if [ "$$WS" != "default" ]; then \
+			terraform workspace select default; \
+			terraform workspace delete $$WS && echo "[terraform] Deleted workspace: $$WS" || echo "[terraform] Could not delete $$WS (may have state remaining)"; \
+		fi; \
+	done; \
+	echo ""; \
+	echo "[terraform] All workspaces destroyed. Active workspace: default"

@@ -1,6 +1,6 @@
 # CloudWatch Log Group for ECS
 resource "aws_cloudwatch_log_group" "ecs" {
-  name              = "/ecs/app-tester"
+  name              = "/ecs/${local.project}-${local.environment}"
   retention_in_days = var.container_log_retention_days
 
   kms_key_id = null # Using default AWS-managed key for now

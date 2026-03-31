@@ -33,10 +33,12 @@ CLUSTER               = INFRA.get("cluster_name", "ecs-app-tester-exp-dev")
 PRIVATE_SUBNETS       = INFRA.get("private_subnet_ids", [])
 TASK_SG               = INFRA.get("ecs_task_security_group_id", "")
 EXEC_ROLE_ARN         = INFRA.get("ecs_task_execution_role_arn", "")
+WS_TASK_ROLE_ARN      = INFRA.get("ecs_workspace_task_role_arn", "")
 LOG_GROUP             = INFRA.get("cloudwatch_log_group_name", "/ecs/app-tester")
 VPC_ID                = INFRA.get("vpc_id", "")
-CLOUDMAP_NAMESPACE_ID = INFRA.get("cloudmap_namespace_id", "")
-DOMAIN                = "builder.muhilvannan.com"
+CLOUDMAP_NAMESPACE_ID  = INFRA.get("cloudmap_namespace_id", "")
+LANDING_PAGE_IMAGE     = INFRA.get("landing_page_ecr_uri", "")
+DOMAIN                 = "builder.muhilvannan.com"
 
 # Ports
 LANDING_PAGE_PORT  = 3001
@@ -73,8 +75,7 @@ def _app_config(app_type: str, workspace_id: str = "", app_id: str = ""):
         command = ["sh", "-c",
                    f"pip install --quiet streamlit && "
                    f"python -m streamlit hello "
-                   f"--server.port=8501 --server.headless=true --server.address=0.0.0.0 "
-                   f"--server.baseUrlPath={base_path}"]
+                   f"--server.port=8501 --server.headless=true --server.address=0.0.0.0"]
 
     elif app_type == "reactjs":
         command = ["sh", "-c",
@@ -112,25 +113,12 @@ def _app_config(app_type: str, workspace_id: str = "", app_id: str = ""):
                    f"mkdir -p /app/docs/docs && "
                    f"cat > /app/docs/mkdocs.yml << 'EOF'\n"
                    f"site_name: My Docs\n"
-                   f"site_url: https://{DOMAIN}{base_path}/\n"
-                   f"use_directory_urls: true\n"
+                   f"use_directory_urls: false\n"
                    f"EOF\n"
                    f"cat > /app/docs/docs/index.md << 'EOF'\n"
                    f"# Welcome\n\nMkDocs is running on ECS Fargate.\n"
                    f"EOF\n"
-                   f"cd /app/docs && mkdocs build --quiet && "
-                   f"python - << 'PYEOF'\n"
-                   f"import http.server, os\n"
-                   f"os.chdir('/app/docs/site')\n"
-                   f"BASE = '{base_path}'\n"
-                   f"class H(http.server.SimpleHTTPRequestHandler):\n"
-                   f"    def translate_path(self, path):\n"
-                   f"        if path.startswith(BASE + '/'): path = path[len(BASE):]\n"
-                   f"        elif path == BASE: path = '/'\n"
-                   f"        return super().translate_path(path)\n"
-                   f"    def log_message(self, *a): pass\n"
-                   f"http.server.HTTPServer(('0.0.0.0', 8001), H).serve_forever()\n"
-                   f"PYEOF"]
+                   f"cd /app/docs && mkdocs serve --dev-addr=0.0.0.0:8001"]
 
     return image, port, command
 
@@ -258,19 +246,11 @@ def register_workspace_task_definition(workspace_id: str) -> str:
     family = workspace_task_family(workspace_id)
     base_path = f"/workspace{workspace_id}"
 
-    landing_page_cmd = [
-        "sh", "-c",
-        f"npm install && WORKSPACE_ID={workspace_id} BASE_PATH={base_path} "
-        f"DOMAIN={DOMAIN} "
-        f"node /app/server.js"
-    ]
-
     container_defs = [
         {
             "name": "landing-page",
-            "image": _NODE,
+            "image": LANDING_PAGE_IMAGE,
             "portMappings": [{"containerPort": LANDING_PAGE_PORT, "protocol": "tcp"}],
-            "command": landing_page_cmd,
             "essential": True,
             "environment": [
                 {"name": "WORKSPACE_ID", "value": workspace_id},
@@ -298,6 +278,7 @@ def register_workspace_task_definition(workspace_id: str) -> str:
         cpu="512",
         memory="1024",
         executionRoleArn=EXEC_ROLE_ARN,
+        taskRoleArn=WS_TASK_ROLE_ARN,
         containerDefinitions=container_defs,
         volumes=volumes,
         tags=[{"key": "WorkspaceId", "value": workspace_id}],
@@ -879,9 +860,11 @@ def start_app(payload: AppAction):
         td = ecs.describe_task_definition(taskDefinition=task_defs_resp["taskDefinitionArns"][0])["taskDefinition"]
         port = td["containerDefinitions"][0]["portMappings"][0]["containerPort"]
 
+        # Cloud Map InstanceId max 64 chars — use task ID, not full ARN
+        task_id = app_task_arn.split("/")[-1]
         sd.register_instance(
             ServiceId=service_id,
-            InstanceId=app_task_arn,
+            InstanceId=task_id,
             Attributes={
                 "AWS_INSTANCE_IPV4": app_ip,
                 "AWS_INSTANCE_PORT": str(port),
@@ -914,7 +897,8 @@ def stop_app(payload: AppAction):
         if task_arns:
             service_id = get_cloudmap_service_id(workspace_id)
             try:
-                sd.deregister_instance(ServiceId=service_id, InstanceId=task_arns[0])
+                task_id = task_arns[0].split("/")[-1]
+                sd.deregister_instance(ServiceId=service_id, InstanceId=task_id)
                 log.info("Deregistered Cloud Map instance: %s (task %s)", app_id, task_arns[0])
             except sd.exceptions.InstanceNotFound:
                 log.warning("Cloud Map instance not found for %s — already deregistered?", app_id)

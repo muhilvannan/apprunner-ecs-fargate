@@ -128,3 +128,9 @@ output "certificate_arn" {
   value       = aws_acm_certificate.main.arn
   description = "ACM certificate ARN"
 }
+
+# ECR Outputs
+output "landing_page_ecr_uri" {
+  value       = aws_ecr_repository.landing_page.repository_url
+  description = "ECR repository URI for the workspace landing page image"
+}

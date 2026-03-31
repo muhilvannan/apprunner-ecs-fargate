@@ -46,25 +46,26 @@ resource "aws_subnet" "private" {
 }
 
 # Elastic IP for NAT Gateway
+# Single NAT GW to minimise EIP usage — experiment stack does not need HA NAT
 resource "aws_eip" "nat" {
-  count  = length(var.availability_zones)
+  count  = 1
   domain = "vpc"
 
   tags = {
-    Name = "${local.cluster_name}-eip-${count.index + 1}"
+    Name = "${local.cluster_name}-eip-1"
   }
 
   depends_on = [aws_internet_gateway.main]
 }
 
-# NAT Gateway (one per AZ in public subnet)
+# NAT Gateway — single instance in first public subnet (experiment stack)
 resource "aws_nat_gateway" "main" {
-  count         = length(var.availability_zones)
-  allocation_id = aws_eip.nat[count.index].id
-  subnet_id     = aws_subnet.public[count.index].id
+  count         = 1
+  allocation_id = aws_eip.nat[0].id
+  subnet_id     = aws_subnet.public[0].id
 
   tags = {
-    Name = "${local.cluster_name}-nat-${count.index + 1}"
+    Name = "${local.cluster_name}-nat-1"
   }
 
   depends_on = [aws_internet_gateway.main]
@@ -91,18 +92,18 @@ resource "aws_route_table_association" "public" {
   route_table_id = aws_route_table.public.id
 }
 
-# Private Route Table (one per AZ for NAT Gateway distribution)
+# Private Route Table — single table shared by all private subnets (single NAT GW)
 resource "aws_route_table" "private" {
-  count  = length(var.availability_zones)
+  count  = 1
   vpc_id = aws_vpc.main.id
 
   route {
     cidr_block     = "0.0.0.0/0"
-    nat_gateway_id = aws_nat_gateway.main[count.index].id
+    nat_gateway_id = aws_nat_gateway.main[0].id
   }
 
   tags = {
-    Name = "${local.cluster_name}-rt-private-${count.index + 1}"
+    Name = "${local.cluster_name}-rt-private"
   }
 }
 
@@ -110,7 +111,7 @@ resource "aws_route_table" "private" {
 resource "aws_route_table_association" "private" {
   count          = length(aws_subnet.private)
   subnet_id      = aws_subnet.private[count.index].id
-  route_table_id = aws_route_table.private[count.index].id
+  route_table_id = aws_route_table.private[0].id
 }
 
 # Security Group for ALB
@@ -160,6 +161,14 @@ resource "aws_security_group" "ecs_tasks" {
     protocol        = "tcp"
     security_groups = [aws_security_group.alb.id]
     description     = "Allow all TCP from ALB"
+  }
+
+  ingress {
+    from_port = 0
+    to_port   = 65535
+    protocol  = "tcp"
+    self      = true
+    description = "Allow inter-task traffic (landing page proxy to app tasks)"
   }
 
   ingress {

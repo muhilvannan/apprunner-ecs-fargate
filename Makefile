@@ -1,6 +1,6 @@
 # Root Makefile for ECS App Tester
 
-.PHONY: api-build api-rebuild api-run api-stop api-clean tf-init tf-validate tf-plan tf-apply tf-destroy tf-output tf-clean ui-install ui-start run stop clean cleanup-aws
+.PHONY: api-build api-rebuild api-run api-stop api-clean tf-init tf-validate tf-plan tf-apply tf-destroy tf-output tf-clean tf-destroy-all ui-install ui-start run stop clean cleanup-aws landing-push
 
 # API targets
 api-build:
@@ -50,12 +50,30 @@ tf-experiment:
 tf-experiment-apply:
 	cd terraform && make experiment-apply
 
+tf-experiment-output:
+	cd terraform && make experiment-output
+
 tf-experiment-destroy:
 	cd terraform && make experiment-destroy
 
 # Prod stack (main branch — brewer.muhilvannan.com)
 tf-prod:
 	cd terraform && make prod
+
+tf-destroy-all:
+	cd terraform && make destroy-all
+
+# Landing page — build and push to ECR (requires infrastructure-outputs.json to exist)
+AWS_REGION     ?= eu-west-1
+LANDING_ECR_URI = $(shell python3 -c "import json; d=json.load(open('infrastructure-outputs.json')); print(d['landing_page_ecr_uri']['value'])" 2>/dev/null)
+
+landing-push:
+	@if [ -z "$(LANDING_ECR_URI)" ]; then echo "ERROR: landing_page_ecr_uri not found in infrastructure-outputs.json — run make tf-experiment-output first"; exit 1; fi
+	aws ecr get-login-password --region $(AWS_REGION) | docker login --username AWS --password-stdin $(LANDING_ECR_URI)
+	docker buildx build --platform linux/amd64 -t landing-page ui-nodejs/workspace-landing/ --load
+	docker tag landing-page:latest $(LANDING_ECR_URI):latest
+	docker push $(LANDING_ECR_URI):latest
+	@echo "Pushed $(LANDING_ECR_URI):latest"
 
 # UI targets
 ui-install:

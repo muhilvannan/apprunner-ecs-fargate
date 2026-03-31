@@ -310,20 +310,20 @@
         try {
             const resp = await fetch('/internal/routes');
             const data = await resp.json();
-            return data.routes || {};
+            return data.apps || [];
         } catch {
-            return {};
+            return [];
         }
     }
 
     async function refresh() {
-        const routes = await loadRoutes();
-        appData = Object.entries(routes).map(([appId, info]) => ({
-            appId,
-            appIP: info.appIP,
-            port: info.port,
-            basePath: info.basePath || `${BASE_PATH}/${appId}`,
-            url: `https://__DOMAIN__${info.basePath || BASE_PATH + '/' + appId}`,
+        const apps = await loadRoutes();
+        appData = apps.map(app => ({
+            appId: app.appId,
+            appIP: app.ip,
+            port: app.port,
+            basePath: `${BASE_PATH}/${app.appId}`,
+            url: `https://__DOMAIN__${BASE_PATH}/${app.appId}`,
             status: 'running',
         }));
 

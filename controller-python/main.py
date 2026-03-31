@@ -705,7 +705,7 @@ def bootstrap_workspace(payload: WorkspaceBootstrap):
        a. Register single-container app task definition.
        b. run_task with workspace IAM role.
        c. Wait for task running + get IP.
-       d. POST to landing page /internal/routes/add.
+       (Cloud Map registration happens via /app/start, not here)
     """
     try:
         workspace_id = payload.workspaceId
@@ -734,16 +734,12 @@ def bootstrap_workspace(payload: WorkspaceBootstrap):
         else:
             log.warning("Workspace task did not reach RUNNING — TG registration skipped")
 
-        # Get workspace task IP (for legacy Envoy route management — removed in Phase 2)
-        workspace_ip = wait_for_task_ip(workspace_task_arn) if workspace_task_arn else None
-
-        # 7. Per-app: register task def, run_task, register Envoy route
+        # 7. Per-app: register task def, run_task
+        # Note: Cloud Map registration happens via /app/start endpoint, not bootstrap
         app_results = {}
         for app_def in payload.apps:
             app_id   = app_def.get("name", "app")
             app_type = app_def.get("type", "custom")
-            _, port, _ = _app_config(app_type)
-            base_path = f"/workspace{workspace_id}/{app_id}"
 
             try:
                 app_task_def_arn = register_app_task_definition(workspace_id, app_def, app_role_arn)
@@ -755,16 +751,11 @@ def bootstrap_workspace(payload: WorkspaceBootstrap):
                     if running:
                         app_ip = wait_for_task_ip(app_task_arn)
 
-                route_registered = False
-                if app_ip and workspace_ip:
-                    route_registered = register_app_route(workspace_ip, app_id, app_ip, port, base_path)
-
                 app_results[app_id] = {
                     "url": app_url(workspace_id, app_id),
                     "taskArn": app_task_arn,
                     "ip": app_ip,
-                    "routeRegistered": route_registered,
-                    "status": "running" if (app_ip and route_registered) else "starting",
+                    "status": "running" if app_ip else "starting",
                 }
             except Exception as app_exc:
                 log.exception("Failed to bootstrap app %s", app_id)
@@ -785,22 +776,25 @@ def bootstrap_workspace(payload: WorkspaceBootstrap):
 @app.get("/workspace/{workspace_id}/apps")
 def list_workspace_apps(workspace_id: str):
     """List apps by finding run_task tasks tagged with WorkspaceId
-    and cross-referencing with Envoy route state from landing page.
+    and cross-referencing with Cloud Map instance registration state.
     """
     try:
-        # Get Envoy route state from landing page
-        workspace_ip = get_landing_page_ip(workspace_id)
-        routes = {}
-        if workspace_ip:
-            try:
-                resp = httpx.get(
-                    f"http://{workspace_ip}:{LANDING_PAGE_PORT}/internal/routes",
-                    timeout=5,
-                )
-                if resp.status_code == 200:
-                    routes = resp.json().get("routes", {})
-            except Exception as e:
-                log.warning("Could not fetch Envoy routes from landing page: %s", e)
+        # Query Cloud Map for running app instances
+        try:
+            discovery_resp = sd.discover_instances(
+                NamespaceName="workspace-discovery.local",
+                ServiceName=cloudmap_service_name(workspace_id),
+                HealthStatus="HEALTHY",
+                MaxResults=100,
+            )
+            running_app_ids = {
+                inst["Attributes"].get("app_id")
+                for inst in discovery_resp.get("Instances", [])
+                if inst["Attributes"].get("app_id")
+            }
+        except Exception as e:
+            log.warning("Could not query Cloud Map for workspace %s: %s", workspace_id, e)
+            running_app_ids = set()
 
         # Find app tasks by listing task families matching {workspaceId}-*-task
         apps = []
@@ -817,7 +811,7 @@ def list_workspace_apps(workspace_id: str):
             suffix = "-task"
             if family.startswith(prefix) and family.endswith(suffix):
                 app_id = family[len(prefix):-len(suffix)]
-                in_route = app_id in routes
+                in_route = app_id in running_app_ids
                 task_arns = _find_app_task_arns(workspace_id, app_id)
                 apps.append({
                     "appId": app_id,
@@ -832,7 +826,7 @@ def list_workspace_apps(workspace_id: str):
 
 @app.post("/app/start")
 def start_app(payload: AppAction):
-    """Start an app: run_task if not running, then register Envoy route."""
+    """Start an app: run_task if not running, then register in Cloud Map."""
     try:
         workspace_id = payload.workspaceId
         app_id       = payload.appId
@@ -840,10 +834,12 @@ def start_app(payload: AppAction):
         # Check if already running
         task_arns = _find_app_task_arns(workspace_id, app_id)
         app_ip = None
+        app_task_arn = None
 
         if task_arns:
-            app_ip = wait_for_task_ip(task_arns[0], retries=3, delay=2)
-            log.info("App task already running: %s ip=%s", task_arns[0], app_ip)
+            app_task_arn = task_arns[0]
+            app_ip = wait_for_task_ip(app_task_arn, retries=3, delay=2)
+            log.info("App task already running: %s ip=%s", app_task_arn, app_ip)
         else:
             # Re-run the task using the latest registered task definition
             family = app_task_family(workspace_id, app_id)
@@ -875,24 +871,31 @@ def start_app(payload: AppAction):
         if not app_ip:
             raise RuntimeError("Could not get app task IP")
 
-        # Register route in Envoy via landing page
-        workspace_ip = get_landing_page_ip(workspace_id)
-        if not workspace_ip:
-            raise RuntimeError("Workspace service not running — cannot register route")
-
+        # Register in Cloud Map
+        service_id = get_cloudmap_service_id(workspace_id)
         # Get port from task definition
         family = app_task_family(workspace_id, app_id)
-        task_defs = ecs.list_task_definitions(familyPrefix=family, sort="DESC", maxResults=1)
-        td = ecs.describe_task_definition(taskDefinition=task_defs["taskDefinitionArns"][0])["taskDefinition"]
+        task_defs_resp = ecs.list_task_definitions(familyPrefix=family, sort="DESC", maxResults=1)
+        td = ecs.describe_task_definition(taskDefinition=task_defs_resp["taskDefinitionArns"][0])["taskDefinition"]
         port = td["containerDefinitions"][0]["portMappings"][0]["containerPort"]
-        base_path = f"/workspace{workspace_id}/{app_id}"
 
-        register_app_route(workspace_ip, app_id, app_ip, port, base_path)
+        sd.register_instance(
+            ServiceId=service_id,
+            InstanceId=app_task_arn,
+            Attributes={
+                "AWS_INSTANCE_IPV4": app_ip,
+                "AWS_INSTANCE_PORT": str(port),
+                "app_id": app_id,
+            },
+        )
+        log.info("Registered Cloud Map instance: %s → %s:%d", app_id, app_ip, port)
 
         return {
             "status": "app started",
             "workspaceId": workspace_id,
             "appId": app_id,
+            "taskArn": app_task_arn,
+            "ip": app_ip,
             "url": app_url(workspace_id, app_id),
         }
     except Exception as exc:
@@ -901,17 +904,24 @@ def start_app(payload: AppAction):
 
 @app.post("/app/stop")
 def stop_app(payload: AppAction):
-    """Stop an app: deregister Envoy route, then stop_task."""
+    """Stop an app: deregister from Cloud Map first, then stop_task."""
     try:
         workspace_id = payload.workspaceId
         app_id       = payload.appId
 
-        # Deregister from Envoy first
-        workspace_ip = get_landing_page_ip(workspace_id)
-        if workspace_ip:
-            deregister_app_route(workspace_ip, app_id)
+        # Deregister from Cloud Map first (prevents traffic before task stops)
+        task_arns = _find_app_task_arns(workspace_id, app_id)
+        if task_arns:
+            service_id = get_cloudmap_service_id(workspace_id)
+            try:
+                sd.deregister_instance(ServiceId=service_id, InstanceId=task_arns[0])
+                log.info("Deregistered Cloud Map instance: %s (task %s)", app_id, task_arns[0])
+            except sd.exceptions.InstanceNotFound:
+                log.warning("Cloud Map instance not found for %s — already deregistered?", app_id)
+            except Exception as e:
+                log.warning("Cloud Map deregister failed for %s: %s", app_id, e)
         else:
-            log.warning("Workspace service IP not found — skipping Envoy deregistration")
+            log.warning("No running task found for app %s — skipping Cloud Map deregister", app_id)
 
         # Stop the task
         stopped = stop_app_task(workspace_id, app_id)

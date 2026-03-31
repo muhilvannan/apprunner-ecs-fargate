@@ -1,175 +1,121 @@
 const express = require('express');
 const fs = require('fs');
 const path = require('path');
-const { execSync } = require('child_process');
+const { ServiceDiscoveryClient, DiscoverInstancesCommand } = require('@aws-sdk/client-servicediscovery');
+const { createProxyMiddleware } = require('http-proxy-middleware');
 
 const app = express();
 app.use(express.json());
 
-const WORKSPACE_ID    = process.env.WORKSPACE_ID || 'ws-unknown';
-const BASE_PATH       = process.env.BASE_PATH || `/workspace${WORKSPACE_ID}`;
-const DOMAIN          = process.env.DOMAIN || 'builder.muhilvannan.com';
-const ENVOY_ADMIN_PORT = parseInt(process.env.ENVOY_ADMIN_PORT || '9901');
-const PORT            = 3001;
-const ENVOY_CONFIG    = '/etc/envoy/envoy.yaml';
+const WORKSPACE_ID = process.env.WORKSPACE_ID || 'ws-unknown';
+const BASE_PATH    = process.env.BASE_PATH || `/workspace${WORKSPACE_ID}`;
+const DOMAIN       = process.env.DOMAIN || 'builder.muhilvannan.com';
+const PORT         = 3001;
 
 // ---------------------------------------------------------------------------
-// In-memory route table: { [appId]: { appIP, port, basePath } }
+// Cloud Map SDK setup (D-06)
 // ---------------------------------------------------------------------------
-const routes = {};
+const sdClient = new ServiceDiscoveryClient({ region: process.env.AWS_DEFAULT_REGION || process.env.AWS_REGION || 'eu-west-1' });
+const CLOUDMAP_NAMESPACE = 'workspace-discovery.local';
 
 // ---------------------------------------------------------------------------
-// Envoy config generation
+// Per-workspace Cloud Map cache (D-07)
+// Cache: { [workspaceId]: { instances: [], fetchedAt: 0 } }
 // ---------------------------------------------------------------------------
-function buildEnvoyConfig() {
-  const routeEntries = Object.entries(routes);
+const cloudMapCache = {};
+const CACHE_TTL_MS = 5000;
 
-  // Build per-app route + cluster entries
-  const appRoutes = routeEntries.map(([appId, { basePath }]) => `
-              - match:
-                  prefix: "${basePath}/"
-                route:
-                  cluster: app_${appId}
-                  prefix_rewrite: "/"
-              - match:
-                  prefix: "${basePath}"
-                route:
-                  cluster: app_${appId}
-                  prefix_rewrite: "/"`).join('');
+async function resolveCloudMap(workspaceId, appId) {
+  const now = Date.now();
+  const cached = cloudMapCache[workspaceId];
+  let instances;
 
-  const appClusters = routeEntries.map(([appId, { appIP, port }]) => `
-  - name: app_${appId}
-    connect_timeout: 5s
-    type: STATIC
-    load_assignment:
-      cluster_name: app_${appId}
-      endpoints:
-      - lb_endpoints:
-        - endpoint:
-            address:
-              socket_address:
-                address: "${appIP}"
-                port_value: ${port}`).join('');
+  if (cached && (now - cached.fetchedAt) < CACHE_TTL_MS) {
+    instances = cached.instances;
+  } else {
+    const resp = await sdClient.send(new DiscoverInstancesCommand({
+      NamespaceName: CLOUDMAP_NAMESPACE,
+      ServiceName: `${workspaceId}-apps`,
+      HealthStatus: 'HEALTHY',
+      MaxResults: 100,
+    }));
+    instances = resp.Instances || [];
+    cloudMapCache[workspaceId] = { instances, fetchedAt: now };
+  }
 
-  return `static_resources:
-  listeners:
-  - name: listener_0
-    address:
-      socket_address:
-        address: 0.0.0.0
-        port_value: 8080
-    filter_chains:
-    - filters:
-      - name: envoy.filters.network.http_connection_manager
-        typed_config:
-          "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
-          stat_prefix: ingress_http
-          codec_type: AUTO
-          route_config:
-            name: local_route
-            virtual_hosts:
-            - name: workspace_${WORKSPACE_ID}
-              domains: ["*"]
-              routes:${appRoutes}
-              - match:
-                  prefix: "${BASE_PATH}"
-                route:
-                  cluster: landing_page
-              - match:
-                  prefix: "/"
-                route:
-                  cluster: landing_page
-          http_filters:
-          - name: envoy.filters.http.router
-            typed_config:
-              "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
-  clusters:
-  - name: landing_page
-    connect_timeout: 5s
-    type: STATIC
-    load_assignment:
-      cluster_name: landing_page
-      endpoints:
-      - lb_endpoints:
-        - endpoint:
-            address:
-              socket_address:
-                address: "127.0.0.1"
-                port_value: ${PORT}${appClusters}
-
-admin:
-  address:
-    socket_address:
-      address: 0.0.0.0
-      port_value: ${ENVOY_ADMIN_PORT}
-`;
+  const match = instances.find(i => i.Attributes?.app_id === appId);
+  if (!match) return null;
+  return {
+    ip: match.Attributes.AWS_INSTANCE_IPV4,
+    port: match.Attributes.AWS_INSTANCE_PORT,
+  };
 }
 
-function writeEnvoyConfig() {
-  const config = buildEnvoyConfig();
-  fs.mkdirSync(path.dirname(ENVOY_CONFIG), { recursive: true });
-  fs.writeFileSync(ENVOY_CONFIG, config, 'utf8');
-  console.log(`[envoy-config] Written: ${Object.keys(routes).length} app route(s)`);
-}
+// ---------------------------------------------------------------------------
+// Proxy: /workspace{workspaceId}/{appId}/* → app task via Cloud Map
+// LP-01, LP-04, D-05: registered before hub routes; pathRewrite strips prefix
+// ---------------------------------------------------------------------------
+app.use(`${BASE_PATH}/:appId`, async (req, res, next) => {
+  const appId = req.params.appId;
+  // Don't proxy internal endpoints
+  if (appId === 'internal') return next();
 
-function reloadEnvoy() {
+  let target;
   try {
-    // Signal Envoy to reload config via SIGHUP
-    const pid = execSync('pidof envoy 2>/dev/null || true').toString().trim();
-    if (pid) {
-      execSync(`kill -SIGHUP ${pid}`);
-      console.log(`[envoy-reload] SIGHUP sent to envoy PID ${pid}`);
-    } else {
-      console.log('[envoy-reload] Envoy not running yet — config written for startup');
+    const resolved = await resolveCloudMap(WORKSPACE_ID, appId);
+    if (!resolved) {
+      return res.status(503).json({ error: 'App not available', appId, workspaceId: WORKSPACE_ID });
     }
-  } catch (e) {
-    console.warn('[envoy-reload] Could not signal envoy:', e.message);
+    target = `http://${resolved.ip}:${resolved.port}`;
+  } catch (err) {
+    console.error(`[proxy] Cloud Map lookup failed for ${appId}:`, err.message);
+    return res.status(503).json({ error: 'Service discovery failed', appId });
   }
-}
 
-// Write initial config on startup (landing page only, no app routes yet)
-writeEnvoyConfig();
-
-// ---------------------------------------------------------------------------
-// Internal routes API (called by controller)
-// ---------------------------------------------------------------------------
-
-// GET /internal/routes — return current route map
-app.get('/internal/routes', (req, res) => {
-  res.json({ routes, workspaceId: WORKSPACE_ID });
-});
-
-// POST /internal/routes/add — add/update an app route
-app.post('/internal/routes/add', (req, res) => {
-  const { appId, appIP, port, basePath } = req.body;
-  if (!appId || !appIP || !port) {
-    return res.status(400).json({ error: 'appId, appIP, port required' });
-  }
-  routes[appId] = { appIP, port, basePath: basePath || `${BASE_PATH}/${appId}` };
-  console.log(`[routes] Added: ${appId} → ${appIP}:${port}`);
-  writeEnvoyConfig();
-  reloadEnvoy();
-  res.json({ ok: true, appId, routes });
-});
-
-// POST /internal/routes/remove — remove an app route
-app.post('/internal/routes/remove', (req, res) => {
-  const { appId } = req.body;
-  if (!appId) {
-    return res.status(400).json({ error: 'appId required' });
-  }
-  delete routes[appId];
-  console.log(`[routes] Removed: ${appId}`);
-  writeEnvoyConfig();
-  reloadEnvoy();
-  res.json({ ok: true, appId, routes });
+  createProxyMiddleware({
+    target,
+    changeOrigin: true,
+    pathRewrite: { [`^${BASE_PATH}/${appId}`]: '' },
+    on: {
+      error: (proxyErr, _req, proxyRes) => {
+        console.error(`[proxy] Error forwarding ${appId}:`, proxyErr.message);
+        if (!proxyRes.headersSent) {
+          proxyRes.status(502).json({ error: 'Upstream error' });
+        }
+      },
+    },
+  })(req, res, next);
 });
 
 // ---------------------------------------------------------------------------
-// Health check (used by Envoy and ALB)
+// Internal routes API — live Cloud Map query (LP-05, D-08)
+// ---------------------------------------------------------------------------
+app.get('/internal/routes', async (req, res) => {
+  try {
+    const resp = await sdClient.send(new DiscoverInstancesCommand({
+      NamespaceName: CLOUDMAP_NAMESPACE,
+      ServiceName: `${WORKSPACE_ID}-apps`,
+      HealthStatus: 'HEALTHY',
+      MaxResults: 100,
+    }));
+    const apps = (resp.Instances || []).map(i => ({
+      appId: i.Attributes?.app_id,
+      ip: i.Attributes?.AWS_INSTANCE_IPV4,
+      port: i.Attributes?.AWS_INSTANCE_PORT,
+      instanceId: i.InstanceId,
+    }));
+    res.json({ workspaceId: WORKSPACE_ID, apps });
+  } catch (err) {
+    console.error('[internal/routes] Cloud Map query failed:', err.message);
+    res.status(503).json({ error: 'Could not query Cloud Map', detail: err.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Health check (used by ALB)
 // ---------------------------------------------------------------------------
 app.get('/healthz', (req, res) => {
-  res.json({ status: 'ok', workspaceId: WORKSPACE_ID, routes: Object.keys(routes) });
+  res.json({ status: 'ok', workspaceId: WORKSPACE_ID });
 });
 
 // ---------------------------------------------------------------------------

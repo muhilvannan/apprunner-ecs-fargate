@@ -72,12 +72,14 @@ app.use(`${BASE_PATH}/:appId`, async (req, res, next) => {
   }
 
   let target;
+  let appType = 'custom';
   try {
     const resolved = await resolveCloudMap(WORKSPACE_ID, appId);
     if (!resolved) {
       return res.status(503).json({ error: 'App not available', appId, workspaceId: WORKSPACE_ID });
     }
     target = `http://${resolved.ip}:${resolved.port}`;
+    appType = resolved.appType || 'custom';
   } catch (err) {
     console.error(`[proxy] Cloud Map lookup failed for ${appId}:`, err.message);
     return res.status(503).json({ error: 'Service discovery failed', appId });
@@ -87,7 +89,7 @@ app.use(`${BASE_PATH}/:appId`, async (req, res, next) => {
   if (!proxyInstanceCache[cacheKey]) {
     // Streamlit uses --server.baseUrlPath so it expects the full prefixed path.
     // Other app types handle the stripped path themselves.
-    const pathRewrite = resolved.appType === 'streamlit'
+    const pathRewrite = appType === 'streamlit'
       ? undefined
       : { [`^${BASE_PATH}/${appId}`]: '' };
     proxyInstanceCache[cacheKey] = createProxyMiddleware({
